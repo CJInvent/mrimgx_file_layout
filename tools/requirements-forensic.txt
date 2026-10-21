@@ -1,0 +1,6 @@
+zstandard
+dissect.ntfs
+dissect.hypervisor
+numpy
+pefile
+asn1crypto

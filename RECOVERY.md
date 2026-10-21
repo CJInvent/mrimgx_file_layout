@@ -152,3 +152,6 @@ mount. Validate known files against independently recovered copies. Container
 checks and raw/VHDX equality do not prove that missing source sectors were
 recovered. Use NTFS allocation and MFT runlists to determine affected files
 where those structures can themselves be verified.
+
+For post-recovery orphan-frame mapping, preserved residual exports and verified
+baseline refinement, see [FORENSIC.md](FORENSIC.md).

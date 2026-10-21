@@ -5,6 +5,7 @@ on:
       - 'src/**'
       - 'tools/**'
       - 'build-recovery.cmd'
+      - 'build-frame-repair.cmd'
       - '.github/workflows/recovery.yml'
   workflow_dispatch:
 permissions:
@@ -25,11 +26,21 @@ jobs:
           if (-not $vs) { throw 'MSVC x64 tools not found' }
           & cmd /c build-recovery.cmd "$vs\VC\Auxiliary\Build\vcvars64.bat"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cmd /c build-frame-repair.cmd "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test strict and explicit recovery paths
         run: |
           python -m pip install zstandard
           python tools/test_recovery.py build/img_to_vhdx.exe
+      - name: Test forensic frame and provenance tools
+        shell: pwsh
+        run: |
+          python -m pip install -r tools/requirements-forensic.txt
+          $env:FRAME_REPAIR_EXE = "$pwd\build\repair_frame_bits.exe"
+          python tools/test_forensic.py
       - uses: actions/upload-artifact@v4
         with:
           name: img_to_vhdx-windows-x64
-          path: build/img_to_vhdx.exe
+          path: |
+            build/img_to_vhdx.exe
+            build/repair_frame_bits.exe
