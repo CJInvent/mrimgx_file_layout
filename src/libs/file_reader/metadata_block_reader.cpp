@@ -5,6 +5,8 @@
 #include "file_reader.h"
 #include "metadata_block_reader.h"
 #include "metadataheader.h"
+#include <sstream>
+#include <iomanip>
 
 /**
  * @file
@@ -47,6 +49,9 @@ std::unique_ptr<unsigned char[]> readBlock(const file_structs::fileLayout& backu
 	if (Header.block_Length == 0) {
 		return nullptr;
 	}
+	const auto blockOffset = fileHandle->tellg();
+	if (Header.block_Length > 512u * 1024u * 1024u)
+		throw std::runtime_error("Metadata exceeds 512 MiB safety limit at " + std::to_string((int64_t)blockOffset));
 
 	// Allocate a buffer to read the block
 	std::unique_ptr<unsigned char[]> readBuffer = std::make_unique<unsigned char[]>(Header.block_Length);
@@ -60,7 +65,15 @@ std::unique_ptr<unsigned char[]> readBlock(const file_structs::fileLayout& backu
 
 	// If the computed hash does not match the expected hash, throw an exception
 	if (memcmp(computedHash.data(), Header.hash, sizeof(Header.hash)) != 0) {
-		throw std::runtime_error("Block hash mismatch.");
+		std::ostringstream error;
+		error << "Block hash mismatch: metadata=" << std::string(Header.block_name, 8)
+			<< " payload_offset=" << (int64_t)blockOffset << " stored_length=" << Header.block_Length
+			<< " stage=stored-bytes-before-decrypt/decompress algorithm=MD5 expected=";
+		for (auto b : Header.hash) error << std::hex << std::setw(2) << std::setfill('0') << unsigned(b);
+		error << " computed=";
+		for (auto b : computedHash) error << std::hex << std::setw(2) << std::setfill('0') << unsigned(b);
+		std::cerr << error.str() << std::endl;
+		throw std::runtime_error(error.str());
 	}
 	
 	// If the block is encrypted, decrypt it using AES decryption in ECB mode.
@@ -77,6 +90,9 @@ std::unique_ptr<unsigned char[]> readBlock(const file_structs::fileLayout& backu
 		auto compressedsize = ZSTD_findFrameCompressedSize(readBuffer.get(), Header.block_Length);
 		// Get the size of the decompressed block
 		auto decompressedsize = ZSTD_getFrameContentSize(readBuffer.get(), Header.block_Length);
+		if (ZSTD_isError(compressedsize) || decompressedsize == ZSTD_CONTENTSIZE_ERROR ||
+			decompressedsize == ZSTD_CONTENTSIZE_UNKNOWN || decompressedsize > 512ull * 1024 * 1024)
+			throw std::runtime_error("Invalid or excessive metadata Zstandard frame at " + std::to_string((int64_t)blockOffset));
 
 		// Allocate a buffer for the decompressed data
 		std::unique_ptr<unsigned char[]> outBuffer = std::make_unique<unsigned char[]>(decompressedsize);
@@ -85,7 +101,7 @@ std::unique_ptr<unsigned char[]> readBlock(const file_structs::fileLayout& backu
 		size_t zout = ZSTD_decompress(outBuffer.get(), (size_t)decompressedsize, readBuffer.get(), compressedsize);
 
 		// If decompression failed, throw an exception
-		if (ZSTD_isError(zout)) {
+		if (ZSTD_isError(zout) || zout != decompressedsize) {
 			throw std::runtime_error("Failed to decompress block.");
 		}
 

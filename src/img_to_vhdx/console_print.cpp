@@ -126,10 +126,12 @@ std::string formatDiskSize(uint64_t sizeInBytes) {
  * @param layout The structure of the backup file.
  */
 void describeFile(const file_structs::fileLayout& layout) {
-	CONSOLE_SCREEN_BUFFER_INFO csbi;
-	int columns;
-	GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
-	columns = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+	CONSOLE_SCREEN_BUFFER_INFO csbi{};
+	int columns = 120;
+	if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+		int width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+		if (width > 0 && width <= 1000) columns = width;
+	}
 
 	std::cout << "Macrium Reflect Backup File Structure\n";
 	std::cout << std::string(columns, '_') << "\n";
@@ -217,8 +219,8 @@ std::string formatBytes(uint64_t sizeInBytes) {
 // Function to set the console window size if it's less than the specified width
 void ensureConsoleWidth(int minWidth) {
 	HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-	CONSOLE_SCREEN_BUFFER_INFO csbi;
-	GetConsoleScreenBufferInfo(hConsole, &csbi);
+	CONSOLE_SCREEN_BUFFER_INFO csbi{};
+	if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) return;
 
 	int currentWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
 	if (currentWidth < minWidth) {

@@ -72,10 +72,11 @@ void VHDXManager::CreateVHDX(const std::wstring& filePath, ULONGLONG size, ULONG
     }
 
     // If the creation of the VHDX failed, throw a runtime error.
-    if (FAILED(result)) {
+    if (result != ERROR_SUCCESS) {
         CloseHandle(vhdxCreateHandle);
         throw std::runtime_error("Failed to create VHDX: " + std::to_string(result));
     }
+    CloseHandle(vhdxCreateHandle);
 }
 
 
@@ -116,7 +117,7 @@ void VHDXManager::MountVHDX(const std::wstring& filePath)
    // UniqueHandle smartHandle(vhdxHandle);
 
     // If the opening of the VHDX succeeded, try to attach it.
-    if (SUCCEEDED(result) && vhdxHandle != INVALID_HANDLE_VALUE) {
+    if (result == ERROR_SUCCESS && vhdxHandle != INVALID_HANDLE_VALUE) {
         // Attach the VHDX
         ATTACH_VIRTUAL_DISK_PARAMETERS attachParameters = {};
         attachParameters.Version = ATTACH_VIRTUAL_DISK_VERSION_1;
@@ -124,7 +125,7 @@ void VHDXManager::MountVHDX(const std::wstring& filePath)
         result = AttachVirtualDisk(
             vhdxHandle,
             NULL,
-            ATTACH_VIRTUAL_DISK_FLAG_NONE,
+            ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER,
             0,
             &attachParameters,
             NULL
@@ -132,7 +133,7 @@ void VHDXManager::MountVHDX(const std::wstring& filePath)
     }
 
     // If the opening or attaching of the VHDX failed, throw a runtime error.
-    if (FAILED(result) || vhdxHandle == INVALID_HANDLE_VALUE) {
+    if (result != ERROR_SUCCESS || vhdxHandle == INVALID_HANDLE_VALUE) {
         if (vhdxHandle != INVALID_HANDLE_VALUE) {
             CloseHandle(vhdxHandle);
             vhdxHandle = INVALID_HANDLE_VALUE;
@@ -141,12 +142,13 @@ void VHDXManager::MountVHDX(const std::wstring& filePath)
     }
 
     diskPath.resize(MAX_PATH);
-    DWORD diskPathSizeInChars = MAX_PATH;
+    DWORD diskPathSizeInChars = MAX_PATH * sizeof(wchar_t);
     result = GetVirtualDiskPhysicalPath(vhdxHandle, &diskPathSizeInChars, &diskPath[0]);
 
-    if (FAILED(result)) {
+    if (result != ERROR_SUCCESS) {
         throw std::runtime_error("Failed to get physical path: " + std::to_string(result));
     }
+    diskPath.resize(wcslen(diskPath.c_str()));
 }
 
 

@@ -1,6 +1,9 @@
 ﻿################################################################################
 # This .gitignore file was automatically created by Microsoft(R) Visual Studio.
 ################################################################################
+/build/
+__pycache__/
+*.pyc
 
 /src/libs/encryption/x64
 /src/libs/file_operations/x64

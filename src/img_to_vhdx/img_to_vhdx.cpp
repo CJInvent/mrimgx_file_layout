@@ -46,6 +46,7 @@ The program uses the following libraries:
 #include "console_print.h"
 #include "arg_validator.h"
 #include "vhdx_handler.h"
+#include "recovery.h"
 
 // Function prototypes
 // 
@@ -76,6 +77,21 @@ int wmain(int argc, wchar_t* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
 
     try {
+        // Explicit salvage never alters the normal strict-conversion path.
+        if(argc>=2 && std::wstring(argv[1])==L"--recover-plan") {
+            if(argc!=6 && argc!=7 && argc!=8) throw std::runtime_error(
+                "Usage: img_to_vhdx --recover-plan source.mrimgx plan.json output.vhdx manifest.jsonl [--verify-only | --qemu-img qemu-img.exe | --direct-vhdx qemu-img.exe]");
+            bool dry=argc==7 && std::wstring(argv[6])==L"--verify-only";
+            if(argc==7 && !dry) throw std::runtime_error("Unknown recovery option");
+            std::wstring qemu;
+            bool direct=false;
+            if(argc==8) {
+                direct=std::wstring(argv[6])==L"--direct-vhdx";
+                if(std::wstring(argv[6])!=L"--qemu-img"&&!direct) throw std::runtime_error("Unknown recovery option");
+                qemu=argv[7];
+            }
+            return recovery::run(argv[2],argv[3],argv[4],argv[5],dry,qemu,direct);
+        }
         // Handle the command line parameters and get the filename, password, outputPath, diskNumber, and describe flag
         auto [filename, password, outputPath, diskNumber, keepDiskId, describe, jsonDump] = handleCommandLineParameters(argc, argv);
 

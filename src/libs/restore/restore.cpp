@@ -8,6 +8,7 @@
 #include "..\encryption\encryption.h"
 #include "crc32.h"
 #include "restore.h"
+#include <iomanip>
 
 /**
  * Struct: EncryptionIVParams
@@ -93,6 +94,8 @@ std::unique_ptr<unsigned char[]> readBlock(file_structs::fileLayout& backupLayou
 	if (block.block_length == 0) {
 		return nullptr;
 	}
+	if (block.block_length > 65u * 1024u * 1024u)
+		throw std::runtime_error("Stored data block exceeds safety limit at " + std::to_string(block.file_position));
 	// Allocate a buffer to read the block
 	std::unique_ptr<unsigned char[]> readBuffer = std::make_unique<unsigned char[]>(block.block_length);
 
@@ -110,6 +113,9 @@ std::unique_ptr<unsigned char[]> readBlock(file_structs::fileLayout& backupLayou
 		auto compressedsize = ZSTD_findFrameCompressedSize(readBuffer.get(), block.block_length);
 		// Get the size of the decompressed block
 		auto decompressedsize = ZSTD_getFrameContentSize(readBuffer.get(), block.block_length);
+		if (ZSTD_isError(compressedsize) || decompressedsize == ZSTD_CONTENTSIZE_UNKNOWN ||
+			decompressedsize == ZSTD_CONTENTSIZE_ERROR || decompressedsize > 64ull * 1024 * 1024)
+			throw std::runtime_error("Invalid/excessive Zstandard data frame at " + std::to_string(block.file_position));
 		// Allocate a buffer for the decompressed data
 		std::unique_ptr<unsigned char[]> decompressedBuffer = std::make_unique<unsigned char[]>(decompressedsize);
 
@@ -117,7 +123,7 @@ std::unique_ptr<unsigned char[]> readBlock(file_structs::fileLayout& backupLayou
 		auto zout = ZSTD_decompress(decompressedBuffer.get(), (size_t)decompressedsize, readBuffer.get(), compressedsize);
 
 		// If decompression failed, throw an exception
-		if (ZSTD_isError(zout)) {
+		if (ZSTD_isError(zout) || zout != decompressedsize) {
 			throw std::runtime_error("Failed to decompress block.");
 		}
 
@@ -129,7 +135,15 @@ std::unique_ptr<unsigned char[]> readBlock(file_structs::fileLayout& backupLayou
 
 		// If the computed hash does not match the expected hash, throw an exception
 		if (memcmp(computedHash.data(), block.md5_hash, sizeof(block.md5_hash)) != 0) {
-			throw std::runtime_error("Block hash mismatch.");
+			std::ostringstream error;
+			error << "Block hash mismatch: data source_offset=" << block.file_position
+				<< " file_number=" << block.file_number << " stage=decoded algorithm=MD5 decoded_length=" << decompressedsize
+				<< " expected=";
+			for (auto b : block.md5_hash) error << std::hex << std::setw(2) << std::setfill('0') << unsigned(b);
+			error << " computed=";
+			for (auto b : computedHash) error << std::hex << std::setw(2) << std::setfill('0') << unsigned(b);
+			std::cerr << error.str() << std::endl;
+			throw std::runtime_error(error.str());
 		}
 
 		// Replace the read buffer with the decompressed data

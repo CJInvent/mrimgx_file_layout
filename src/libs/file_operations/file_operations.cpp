@@ -127,7 +127,7 @@ void setFilePointer(std::fstream* file, std::streamoff offset, std::ios::seekdir
  * @throws std::runtime_error if it fails to get the file pointer.
  */
 std::streamoff getCurrentFileOffset(std::fstream* file) {
-    std::streamoff offset = file->tellp();
+    std::streamoff offset = file->tellg();
     if (offset == -1) {
         throw std::runtime_error("Failed to get file pointer.");
     }
@@ -146,9 +146,12 @@ void readFile(std::fstream* file, void* dataBuffer, std::streamsize bytesToRead)
     if (!file->is_open()) {
         throw std::runtime_error("Failed to read from file because the file stream is not open.");
     }
+    const auto offset = file->tellg();
     file->read(static_cast<char*>(dataBuffer), bytesToRead);
     if (file->fail()) {
-        std::string errorMessage = "Failed to read from file.";
+        std::string errorMessage = "Failed to read from file. offset=" + std::to_string((int64_t)offset)
+            + " requested=" + std::to_string(bytesToRead) + " actual=" + std::to_string(file->gcount())
+            + " errno=" + std::to_string(errno);
         if (file->eof()) {
             errorMessage += " Attempted to read past the end of the file.";
         }
