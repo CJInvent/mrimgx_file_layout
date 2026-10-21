@@ -18,9 +18,56 @@ from appx_anchors import match
 from extend_structured_files import file_length
 from extend_cab_mappings import checksum
 from recover_pdf_xrefs import classic_xrefs,stream_xrefs
+from recover_chakra_offsets import pointer_arrays,read_variable
+from recover_duplicate_files import distinctive,FileView
+from discover_duplicate_pairs import candidate_records
+from recover_sqlite_wal import checksum as wal_checksum,transitions
+from ese_checksums import xe_checksum
 
 
 class ForensicTests(unittest.TestCase):
+    def test_ese_checksum_microsoft_reference_vector(self):
+        import struct
+        data=bytearray((i+i//13)&255 for i in range(32768));pgno=0x98765431
+        # Microsoft's checksum_test.cxx TestSetPageChecksumLargePage vector.
+        flags=struct.unpack_from('<I',data,36)[0]|0x2000;struct.pack_into('<I',data,36,flags)
+        expected=(0xf9ce063147b6b865,0x69af69afcdd590e4,0x770988f62ea1a9e2,0x7cb77cb77b839a0e)
+        for i in range(1,4):
+            calculated=xe_checksum(data[i*8192:(i+1)*8192],pgno,False)
+            self.assertEqual(calculated,expected[i]);struct.pack_into('<Q',data,40+(i-1)*8,calculated)
+        self.assertEqual(xe_checksum(data[:8192],pgno),expected[0])
+
+    def test_duplicate_stream_overlay_reads_crossing_boundaries(self):
+        import io
+        original=bytes(range(256))*40;patch=b'changed content'
+        mapping=dict(length=len(patch),source_offset=7,stored_length=9)
+        view=FileView(io.BytesIO(original),4096,len(original),{4096+512:mapping},lambda offset,length:patch)
+        expected=original[:512]+patch+original[512+len(patch):]
+        self.assertEqual(view[:],expected)
+        self.assertEqual(view[500:550],expected[500:550])
+        self.assertEqual(view[520:522],expected[520:522])
+
+    def test_sqlite_wal_checksums_against_real_sqlite_writer(self):
+        import struct
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'test.db';db=sqlite3.connect(path)
+            try:
+                db.execute('PRAGMA journal_mode=WAL');db.execute('CREATE TABLE data (value BLOB)')
+                db.executemany('INSERT INTO data VALUES (?)',[(os.urandom(3000),) for _ in range(8)]);db.commit()
+                data=path.with_name('test.db-wal').read_bytes();big=bool(struct.unpack_from('>I',data)[0]&1);page=struct.unpack_from('>I',data,8)[0]
+                self.assertEqual(wal_checksum(data[:24],big=big),struct.unpack_from('>II',data,24))
+                good=transitions(data,32,page,data[16:24],big);self.assertGreaterEqual(len(good),2)
+                corrupt=bytearray(data);corrupt[32+(page+24)+100]^=1
+                self.assertLess(len(transitions(corrupt,32,page,data[16:24],big)),len(good))
+                self.assertEqual(transitions(data,32,page,b'bad salt',big),[])
+            finally:db.close()
+
+    def test_duplicate_boundary_rejects_padding_and_small_headers(self):
+        self.assertFalse(distinctive(bytes(143360)))
+        self.assertFalse(distinctive(bytes(range(256))*560))
+        self.assertFalse(distinctive(os.urandom(8192)))
+        self.assertTrue(distinctive(os.urandom(32768)))
+
     def test_coverage_exact_complement(self):
         covered=merge_ranges([(20,30),(5,10),(8,12),(12,15),(20,21)])
         self.assertEqual(covered,[[5,15],[20,30]])
@@ -88,6 +135,23 @@ class ForensicTests(unittest.TestCase):
         data+=b'2 0 obj\n<< /Type /XRef /Size 3 /W [1 4 2] /Root 1 0 R /Length '+str(len(encoded)).encode()+b' /Filter /FlateDecode >>\nstream\n'+encoded+b'\nendstream\nendobj\nstartxref\n'+str(offset).encode()+b'\n%%EOF\n'
         self.assertEqual(stream_xrefs(data),{(1,0):9,(2,0):offset})
         self.assertEqual(stream_xrefs(data.replace(b'startxref\n'+str(offset).encode(),b'startxref\n0')), {})
+
+    def test_chakra_absolute_child_offsets_and_variable_fields(self):
+        import struct
+        data=bytearray(512)
+        for start in (64,200):
+            end=start+8*4;first_body=1000+end
+            pointers=[first_body+40*i for i in reversed(range(8))]
+            struct.pack_into('<8I',data,start,*pointers);data[end:end+4]=bytes.fromhex('b11c08c0')
+        arrays=list(pointer_arrays(data,500,5000))
+        hits=[e for e in arrays if e['origin']==1000]
+        self.assertEqual({e['pointer_end'] for e in hits},{96,232})
+        self.assertTrue(all(e['pointer_count']==8 for e in hits))
+        data[64:96]=bytes(32)
+        self.assertEqual(len([e for e in pointer_arrays(data,500,5000) if e['origin']==1000]),1)
+        self.assertEqual(read_variable(bytes([13]),0),(13,1))
+        self.assertEqual(read_variable(bytes([254,168,1]),0),(424,3))
+        self.assertEqual(read_variable(bytes([255,1,2,3,0]),0),(197121,5))
 
     def test_cross_window_frames_and_decode_failures(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -25,6 +25,9 @@ clusters and 143360-byte backup frames; inspect geometry before reuse.
    frame. Each tool's `--help` describes its positional inputs.
    `recover_pdf_xrefs.py` also places frames when multiple PDF object headers
    agree through original cross-reference offsets and NTFS physical extents.
+   `recover_chakra_offsets.py --record MFT_RECORD` can use multiple independent
+   absolute nested-function arrays in serialized Chakra bytecode. It parses the
+   bytecode container without loading it into an engine or executing it.
 4. `clone_sparse_file.py BASELINE CLONE COPY_LOG` creates an exclusive standalone
    sparse copy. Windows allocated extents retain original physical offsets.
    `refine_vhdx.py SOURCE BASELINE CLONE COPY_LOG BASELINE_MANIFEST MAPPINGS LOG`
@@ -79,9 +82,36 @@ complete a full clone-extent verification before delivering a retried output.
 - PDF mappings require original `startxref`/EOF and complete xref tables/streams,
   with multiple distinct object headers agreeing through NTFS file extents.
   Rebuilt cross-reference tables and signatures alone are not accepted.
+- Chakra mappings require a matching container size/architecture, original MFT
+  runlist, multiple independent self-addressing child-function arrays and body
+  masks corroborated by surviving bytecode. Source ordering is not used.
 - `extend_structured_files.py` requires three distinct complete CRC-checked
   PNG/gzip files and MFT sizes/addresses agreeing on a unique layout. Single
   signatures or file sizes never establish a placement.
+- `recover_duplicate_files.py` takes explicit target/donor MFT record pairs.
+  It requires equal sizes, an entirely covered donor and agreement of every
+  surviving target byte before matching exact orphan SHA-256 file slices.
+  Optional boundary recovery requires at least 32 KiB of varied matching bytes
+  and exactly one decoded content candidate. It inserts the original orphan
+  frame, including its original boundary bytes, never copied donor data.
+  An explicit `--allow-metadata-duplicates` mode permits fewer than 4096
+  surviving target bytes only with the same filename, size and exact original
+  NTFS modification timestamp. Such identity inferences are separately labeled,
+  require distinctive orphan bytes and remain weaker than an original digest.
+  Large comparisons can stream in bounded chunks with `--stream-large-files`.
+- `discover_duplicate_pairs.py` nominates possible donors from raw cached MFT
+  names and sizes, including renamed copies. Nominations alone authorize no
+  recovery; the duplicate mapper validates the real records and content.
+- `recover_sqlite_wal.py` uses surviving WAL header salts, multiple independently
+  checked rolling checksum transitions and a unique file/frame grid position.
+  WAL content is parsed without replaying transactions or opening recovered DBs.
+- `recover_ese_pages.py` requires multiple full pages with valid four-part
+  XOR/ECC checksums, matching embedded page addresses, unique affected-database
+  runlist alignment and exact collective DBTIME/OBJID header maxima. Optional
+  cross-boundary checks use previously known neighboring bytes. Database identity
+  remains a structural inference; the page checksum itself does not identify
+  the database. `ese_checksums.py` never corrects bytes and is tested against
+  Microsoft's published 32 KiB page checksum vector (see `ESE-LICENSE.txt`).
 
 Different decoded bytes at one destination are conflicts. Identical candidates
 are duplicates. Ordinary surviving verified data is never replaced using weaker
@@ -121,3 +151,4 @@ constraints, decompressor improvements and independently corroborated mappings.
 Format references: [Chromium cache format](https://chromium.googlesource.com/chromium/src/+/master/net/disk_cache/simple/simple_entry_format.h),
 [Chromium filename hashing](https://chromium.googlesource.com/chromium/src/+/master/net/disk_cache/simple/simple_util.cc),
 [Microsoft cabinet specification](https://download.microsoft.com/download/4/d/a/4da14f27-b4ef-4170-a6e6-5b1ef85b1baa/%5Bms-cab%5D.pdf).
+[Chakra serialization implementation](https://github.com/chakra-core/ChakraCore/blob/master/lib/Runtime/ByteCode/ByteCodeSerializer.cpp).
