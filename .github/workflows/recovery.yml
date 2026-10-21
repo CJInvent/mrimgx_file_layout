@@ -1,6 +1,11 @@
 name: Recovery regression tests
 on:
   push:
+    paths:
+      - 'src/**'
+      - 'tools/**'
+      - 'build-recovery.cmd'
+      - '.github/workflows/recovery.yml'
   workflow_dispatch:
 permissions:
   contents: read

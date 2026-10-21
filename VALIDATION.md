@@ -14,12 +14,12 @@ boundaries, plus untouched-zero and out-of-bounds checks.
 
 A later redirected-output test exposed an upstream uninitialized console-size
 bug. The source now checks the console API result and uses a bounded fallback.
-The final source compiles with MSVC 14.44 x64, but final executable regression
-tests remain unconfirmed: Windows refused process creation with WinError 5
-(Access denied), affecting both the rebuilt converter and QEMU. Seven native
-test cases could not launch; the Python-only bounds test passed. This is not
-recorded as a passing final suite. Re-run the commands in RECOVERY.md on a host
-that permits execution before treating the latest executable as fully validated.
+The final source compiles with MSVC 14.44 x64. Local execution was blocked by
+WinError 5 (Access denied), affecting both the rebuilt converter and QEMU.
+Independent Windows CI then built commit `cd92823` and **passed all eight
+integration tests**, including redirected strict output. The successful run and
+its compiled executable artifact are available at:
+https://github.com/CJInvent/mrimgx_file_layout/actions/runs/39610668471
 
 The full recovered artifact separately passed read-only checks of both VHDX
 header and region-table CRC32Cs, payload BAT states, file bounds and overlapping
