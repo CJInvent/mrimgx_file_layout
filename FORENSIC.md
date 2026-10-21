@@ -99,6 +99,13 @@ complete a full clone-extent verification before delivering a retried output.
   NTFS modification timestamp. Such identity inferences are separately labeled,
   require distinctive orphan bytes and remain weaker than an original digest.
   Large comparisons can stream in bounded chunks with `--stream-large-files`.
+  Fragmented uncompressed file runlists are supported. Logical donor slices
+  are assembled in physical frame order; every intersecting file extent must
+  match. Compressed/sparse streams remain excluded.
+  `--allow-partial-donor` can use intact portions of an otherwise incomplete
+  donor. It compares only mutually known bytes and removes every unresolved
+  donor span from candidate constraints. Its donor observation hash is explicitly
+  labeled as incomplete; unknown donor placeholders never become recovery data.
 - `discover_duplicate_pairs.py` nominates possible donors from raw cached MFT
   names and sizes, including renamed copies. Nominations alone authorize no
   recovery; the duplicate mapper validates the real records and content.

@@ -19,7 +19,7 @@ from extend_structured_files import file_length
 from extend_cab_mappings import checksum
 from recover_pdf_xrefs import classic_xrefs,stream_xrefs
 from recover_chakra_offsets import pointer_arrays,read_variable
-from recover_duplicate_files import distinctive,FileView
+from recover_duplicate_files import distinctive,FileView,frame_pieces,exclude_holes
 from discover_duplicate_pairs import candidate_records
 from recover_sqlite_wal import checksum as wal_checksum,transitions
 from ese_checksums import xe_checksum
@@ -46,6 +46,18 @@ class ForensicTests(unittest.TestCase):
         self.assertEqual(view[:],expected)
         self.assertEqual(view[500:550],expected[500:550])
         self.assertEqual(view[520:522],expected[520:522])
+
+    def test_fragmented_duplicate_keeps_physical_and_logical_order_distinct(self):
+        import io
+        logical=b'A'*4096+b'B'*4096
+        extents=[(0,8192,4096),(4096,0,4096)]
+        mapping=dict(length=4096,source_offset=1,stored_length=2)
+        view=FileView(io.BytesIO(logical),extents,len(logical),{0:mapping},lambda offset,length:b'C'*4096)
+        self.assertEqual(view[4000:4200],b'A'*96+b'C'*104)
+        self.assertEqual(frame_pieces(extents,0,12288),[(0,4096,4096),(8192,0,4096)])
+        self.assertEqual(frame_pieces(extents,0,4096),[(0,4096,4096)])
+        self.assertEqual(exclude_holes([(0,4096,4096)],[(5000,6000)]),[(0,4096,904),(1904,6000,2192)])
+        self.assertEqual(exclude_holes([(0,4096,4096)],[(0,10000)]),[])
 
     def test_sqlite_wal_checksums_against_real_sqlite_writer(self):
         import struct

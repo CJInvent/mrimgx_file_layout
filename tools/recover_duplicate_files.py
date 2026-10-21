@@ -26,17 +26,46 @@ def distinctive(data):
 
 class FileView:
     def __init__(self,stream,physical,size,mappings,decode):
-        self.stream=stream;self.physical=physical;self.size=size;self.mappings=mappings;self.decode=decode
+        self.stream=stream;self.extents=[(0,physical,size)] if isinstance(physical,int) else physical;self.size=size;self.mappings=mappings;self.decode=decode
 
     def __getitem__(self,key):
         lo,hi,step=key.indices(self.size)
         if step!=1:raise ValueError('slice step')
         self.stream.seek(lo);data=bytearray(self.stream.read(hi-lo))
         if len(data)!=hi-lo:raise ValueError('short file read')
-        for mb,m in self.mappings.items():
-            start=max(self.physical+lo,mb);end=min(self.physical+hi,mb+m['length'])
-            if end>start:data[start-self.physical-lo:end-self.physical-lo]=self.decode(m['source_offset'],m['stored_length'])[start-mb:end-mb]
+        for logical,physical,length in self.extents:
+            left=max(lo,logical);right=min(hi,logical+length)
+            if right<=left:continue
+            for mb,m in self.mappings.items():
+                start=max(physical+left-logical,mb);end=min(physical+right-logical,mb+m['length'])
+                if end>start:data[logical+start-physical-lo:logical+end-physical-lo]=self.decode(m['source_offset'],m['stored_length'])[start-mb:end-mb]
         return data
+
+
+def file_extents(record,size):
+    if any(attr.header.flags&0x4001 for attr in record.attributes.DATA if attr.name==''):raise ValueError('requires uncompressed non-sparse files')
+    result=[];logical=0
+    for cluster,count in record.dataruns():
+        if cluster is None:raise ValueError('requires allocated file extents')
+        length=min(count*4096,size-logical)
+        if length<=0:break
+        result.append((logical,cluster*4096,length));logical+=length
+    if logical!=size:raise ValueError('file runlist does not cover size')
+    return result
+
+
+def frame_pieces(extents,base,stride):
+    return sorted((max(physical,base)-base,logical+max(physical,base)-physical,min(physical+length,base+stride)-max(physical,base)) for logical,physical,length in extents if min(physical+length,base+stride)>max(physical,base))
+
+
+def exclude_holes(pieces,holes):
+    result=[]
+    for offset,logical,length in pieces:
+        parts=[(logical,logical+length)]
+        for lo,hi in holes:
+            parts=[part for start,stop in parts for part in ((start,min(stop,lo)),(max(start,hi),stop)) if part[1]>part[0]]
+        result.extend((offset+start-logical,start,stop-start) for start,stop in parts)
+    return sorted(result)
 
 
 def main():
@@ -48,6 +77,7 @@ def main():
     ap.add_argument('--maximum-file-size',type=int,default=64*1024**2,help='bound in-memory comparison; larger files require a separate streamed pass')
     ap.add_argument('--stream-large-files',action='store_true',help='compare larger files in bounded chunks')
     ap.add_argument('--allow-metadata-duplicates',action='store_true',help='permit sparse corroboration only with identical filename and original NTFS modification timestamp')
+    ap.add_argument('--allow-partial-donor',action='store_true',help='use only independently known donor slices and compare mutually known target/donor bytes')
     a=ap.parse_args();a.output.mkdir(exist_ok=False)
     accepted=json.loads((a.mapping_directory/'accepted-mappings.json').read_text());previous=len(accepted)
     plan=json.loads((a.mapping_directory/'recovery-plan.json').read_text());p=json.loads((a.evidence/'layout.json').read_text())['disks'][0]['partitions'][2]
@@ -62,6 +92,15 @@ def main():
         return [(max(lo,l),min(hi,h)) for l,h in ranges[k:] if l<hi and h>lo]
     def unknown(base):
         return base not in mapped and any(l<=base and base+stride<=h for l,h in missing(base,base+stride))
+    def logical_holes(extents):
+        holes=[]
+        for logical,physical,length in extents:
+            for lo,hi in missing(physical,physical+length):
+                while lo<hi:
+                    base=lo//stride*stride;stop=min(hi,base+stride)
+                    if base not in mapped:holes.append((logical+lo-physical,logical+stop-physical))
+                    lo=stop
+        return sorted(holes)
     v=VHDX(a.baseline);fs=NTFS(RangeStream(v,origin,p['_geometry']['length']));fs.mft.fh=a.mft.open('rb')
     source=a.source.open('rb');db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True)
     @functools.lru_cache(maxsize=64)
@@ -81,33 +120,35 @@ def main():
             size=records[0].size();contents=[];positions=[];pair_pending={}
             streaming=size>a.maximum_file_size
             if streaming and not a.stream_large_files:raise ValueError('file exceeds in-memory comparison bound')
-            target_runs=list(records[0].dataruns())
-            if len(target_runs)==1 and target_runs[0][0] is not None:
-                tb=target_runs[0][0]*4096
-                if not any(unknown(base) for base in range(tb//stride*stride,tb+size,stride)):
-                    report['skipped']='no unresolved target backup frames';continue
+            target_extents=file_extents(records[0],size)
+            bases={base for logical,physical,length in target_extents for base in range(physical//stride*stride,physical+length,stride) if unknown(base)}
+            if not bases:report['skipped']='no unresolved target backup frames';continue
             for r in records:
-                runs=list(r.dataruns())
-                if len(runs)!=1 or runs[0][0] is None or any(attr.header.flags&0x4001 for attr in r.attributes.DATA if attr.name==''):raise ValueError('requires contiguous uncompressed files')
-                base=runs[0][0]*4096;positions.append(base)
-                view=FileView(r.open(),base,size,mapped,decode);data=view if streaming else view[:]
+                extents=file_extents(r,size);positions.append(extents)
+                view=FileView(r.open(),extents,size,mapped,decode);data=view if streaming else view[:]
                 contents.append(data)
-            tb,dbase=positions;tdata,ddata=contents
-            for lo,hi in missing(dbase,dbase+size):
-                while lo<hi:
-                    mb=(lo//stride)*stride
-                    if mb not in mapped:raise ValueError('donor has unresolved bytes')
-                    lo=min(hi,mb+stride)
-            holes=missing(tb,tb+size);compared=0;donor_hash=hashlib.sha256()
+            target_extents,donor_extents=positions;tdata,ddata=contents
+            donor_holes=logical_holes(donor_extents)
+            if donor_holes and not a.allow_partial_donor:raise ValueError('donor has unresolved bytes')
+            holes=[];restored=[]
+            for logical,physical,length in target_extents:
+                holes.extend((logical+lo-physical,logical+hi-physical) for lo,hi in missing(physical,physical+length))
+                for mb,m in mapped.items():
+                    lo=max(physical,mb);hi=min(physical+length,mb+m['length'])
+                    if hi>lo:restored.append((logical+lo-physical,logical+hi-physical))
+            compared=0;donor_hash=hashlib.sha256()
             for chunk in range(0,size,8*1024**2):
                 stop=min(size,chunk+8*1024**2);known=bytearray(b'\1')*(stop-chunk)
                 for lo,hi in holes:
-                    lo=max(tb+chunk,lo);hi=min(tb+stop,hi)
-                    if hi>lo:known[lo-tb-chunk:hi-tb-chunk]=b'\0'*(hi-lo)
-                for mb,m in mapped.items():
-                    lo=max(tb+chunk,mb);hi=min(tb+stop,mb+m['length'])
-                    if hi>lo:known[lo-tb-chunk:hi-tb-chunk]=b'\1'*(hi-lo)
-                target_chunk=tdata[chunk:stop];donor_chunk=ddata[chunk:stop];donor_hash.update(donor_chunk);compared+=sum(known)
+                    lo=max(chunk,lo);hi=min(stop,hi)
+                    if hi>lo:known[lo-chunk:hi-chunk]=b'\0'*(hi-lo)
+                for lo,hi in restored:
+                    lo=max(chunk,lo);hi=min(stop,hi)
+                    if hi>lo:known[lo-chunk:hi-chunk]=b'\1'*(hi-lo)
+                for lo,hi in donor_holes:
+                    lo=max(chunk,lo);hi=min(stop,hi)
+                    if hi>lo:known[lo-chunk:hi-chunk]=b'\0'*(hi-lo)
+                target_chunk=tdata[chunk:stop];donor_chunk=ddata[chunk:stop];donor_hash.update(donor_chunk);compared+=known.count(1)
                 if target_chunk!=donor_chunk and any(x!=y for x,y,k in zip(target_chunk,donor_chunk,known) if k):raise ValueError('surviving target bytes differ')
             metadata_inference=False;mtime=None
             if compared<4096:
@@ -116,25 +157,25 @@ def main():
                 if not metadata_inference:raise ValueError('insufficient surviving target bytes')
                 mtime=int(times[0])
             report.update(size=size,compared_bytes=compared,donor_sha256=donor_hash.hexdigest(),candidates=0)
+            if donor_holes:report.update(donor_complete=False,donor_unresolved_bytes=sum(hi-lo for lo,hi in donor_holes),donor_hash_scope='observed bytes including unresolved zero placeholders; not a complete-file digest')
             if metadata_inference:report.update(metadata_inference=True,original_modification_filetime=mtime)
-            for base in range(((tb+stride-1)//stride)*stride,tb+size-stride+1,stride):
-                if not unknown(base):continue
-                data=ddata[base-tb:base-tb+stride];sha=hashlib.sha256(data).hexdigest();rows=frames.get((stride,sha),[])
-                if not rows:continue
-                if metadata_inference and not distinctive(data):continue
-                pair_pending[base]=(rows[0],dict(method='intact-duplicate-file-exact-frame',target=target,donor=donor,compared_bytes=compared,donor_sha256=report['donor_sha256'],logical_offset=base-tb),rows);report['candidates']+=1
-            if a.allow_boundary:
-                for base in sorted({tb//stride*stride,(tb+size-1)//stride*stride}):
-                    if not unknown(base) or base in pair_pending:continue
-                    lo=max(tb,base);hi=min(tb+size,base+stride);expected=ddata[lo-tb:hi-tb]
-                    if not distinctive(expected):continue
+            for base in sorted(bases):
+                pieces=exclude_holes(frame_pieces(target_extents,base,stride),donor_holes);expected=[ddata[logical:logical+length] for offset,logical,length in pieces];matched=sum(len(part) for part in expected)
+                full=matched==stride and pieces[0][0]==0 and all(pieces[i][0]+pieces[i][2]==pieces[i+1][0] for i in range(len(pieces)-1))
+                if full:
+                    data=b''.join(expected);sha=hashlib.sha256(data).hexdigest();matches=frames.get((stride,sha),[])
+                    if metadata_inference and not distinctive(data):continue
+                elif a.allow_boundary and distinctive(b''.join(expected)):
                     matches=[]
                     for (length,sha),rows in frames.items():
                         if length!=stride:continue
                         corpus.seek(exports[rows[0][0]]);candidate=corpus.read(stride)
-                        if candidate[lo-base:hi-base]==expected:matches.extend(rows)
-                    if len({f[5] for f in matches})!=1:continue
-                    pair_pending[base]=(matches[0],dict(method='intact-duplicate-file-exact-boundary-slice',target=target,donor=donor,compared_bytes=compared,donor_sha256=report['donor_sha256'],logical_offset=lo-tb,matched_bytes=hi-lo),matches);report['candidates']+=1
+                        if all(candidate[offset:offset+n]==part for (offset,logical,n),part in zip(pieces,expected)):matches.extend(rows)
+                else:continue
+                if len({f[5] for f in matches})!=1:continue
+                method='intact-duplicate-file-exact-frame' if full else 'intact-duplicate-file-exact-boundary-slice'
+                pair_pending[base]=(matches[0],dict(method=method,target=target,donor=donor,compared_bytes=compared,donor_sha256=report['donor_sha256'],pieces=[dict(decoded_offset=o,logical_offset=l,length=n) for o,l,n in pieces],matched_bytes=matched,target_extent_count=len(target_extents),donor_extent_count=len(donor_extents)),matches);report['candidates']+=1
+                if donor_holes:pair_pending[base][1].update(donor_complete=False,donor_hash_scope=report['donor_hash_scope'],donor_unresolved_bytes=report['donor_unresolved_bytes'])
             if metadata_inference:
                 for f,e,rows in pair_pending.values():e.update(metadata_inference=True,original_modification_filetime=mtime,identity_evidence='same original filename, size and exact NTFS modification FILETIME; original target bytes insufficient')
             for base,item in pair_pending.items():
