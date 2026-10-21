@@ -43,6 +43,10 @@ clusters and 143360-byte backup frames; inspect geometry before reuse.
    addresses remain unresolved, retaining duplicates and provenance. The initial
    evidence continues to preserve every raw residual byte, undecodable input,
    and metadata byte. Adjacent exported frames need not be adjacent on disk.
+   `refinement_coverage.py SOURCE EVIDENCE MAPPINGS OUTPUT` additionally reconciles
+   selected encoded source ranges and exports their exact remaining complement
+   with original offsets and SHA-256 hashes. This accounting closes against the
+   complete source length, including the separately retained metadata tail.
 
 `measure_refinement.py` measures allocation and MFT runlist coverage. It does not
 claim that filling every recorded missing range validates an entire file.

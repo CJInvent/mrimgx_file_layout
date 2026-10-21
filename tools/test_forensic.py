@@ -27,6 +27,20 @@ class ForensicTests(unittest.TestCase):
         self.assertEqual(list(complement(covered,35)),[(0,5),(15,20),(30,35)])
         self.assertEqual(sum(b-a for a,b in covered)+sum(b-a for a,b in complement(covered,35)),35)
 
+    def test_refinement_encoded_export_accounts_for_every_byte(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);source=root/'source.bin';data=bytes(range(64));source.write_bytes(data)
+            evidence=root/'evidence';evidence.mkdir()
+            (evidence/'coverage-summary.json').write_text(json.dumps(dict(source_size=64,data_region_end=60,metadata_bytes=4,incorporated_encoded_bytes=20)))
+            (evidence/'source-coverage.jsonl').write_text(''.join(json.dumps(dict(status='incorporated-encoded-data',source_offset=lo,length=10))+'\n' for lo in (0,20)))
+            mappings=root/'mappings.json';mappings.write_text(json.dumps([dict(source_offset=10,stored_length=5)]));out=root/'out'
+            command=[sys.executable,str(pathlib.Path(__file__).with_name('refinement_coverage.py')),str(source),str(evidence),str(mappings),str(out)]
+            result=subprocess.run(command,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual((out/'encoded-location-unresolved.bin').read_bytes(),data[15:20]+data[30:60])
+            summary=json.loads((out/'summary.json').read_text());self.assertTrue(summary['accounting_exact']);self.assertEqual(summary['newly_incorporated_encoded_bytes'],5)
+            self.assertEqual(source.read_bytes(),data)
+
     def test_partial_hash_requires_surviving_bits(self):
         candidate=bytes(range(1,17))
         self.assertTrue(partial_digest_matches(candidate[:10]+bytes(6),candidate))
