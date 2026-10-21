@@ -4,3 +4,4 @@ dissect.hypervisor
 numpy
 pefile
 asn1crypto
+pypdf>=6.10,<7

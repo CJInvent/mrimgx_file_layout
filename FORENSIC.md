@@ -76,7 +76,7 @@ complete a full clone-extent verification before delivering a retried output.
   physical file extent. Every member in every touched compression folder must
   pass a complete 7-Zip decompression test. Unrelated pre-existing archive errors
   remain documented. CAB checksums are XOR, not cryptographic hashes.
-- PDF mappings require original `startxref`/EOF and complete classic xref tables,
+- PDF mappings require original `startxref`/EOF and complete xref tables/streams,
   with multiple distinct object headers agreeing through NTFS file extents.
   Rebuilt cross-reference tables and signatures alone are not accepted.
 - `extend_structured_files.py` requires three distinct complete CRC-checked

@@ -17,7 +17,7 @@ from map_orphan_frames import partial_digest_matches
 from appx_anchors import match
 from extend_structured_files import file_length
 from extend_cab_mappings import checksum
-from recover_pdf_xrefs import classic_xrefs
+from recover_pdf_xrefs import classic_xrefs,stream_xrefs
 
 
 class ForensicTests(unittest.TestCase):
@@ -80,6 +80,14 @@ class ForensicTests(unittest.TestCase):
         self.assertEqual(classic_xrefs(data),{(1,0):9})
         with self.assertRaises(ValueError):classic_xrefs(data.replace(b'0000000009 00000 n',b'9999999999 00000 n'))
         self.assertEqual(classic_xrefs(data[:-10]),{})
+
+    def test_pdf_original_xref_stream(self):
+        data=b'%PDF-1.5\n1 0 obj\n<< /Type /Catalog >>\nendobj\n';offset=len(data)
+        raw=bytes([0])+bytes(4)+(65535).to_bytes(2,'big')+bytes([1])+(9).to_bytes(4,'big')+bytes(2)+bytes([1])+offset.to_bytes(4,'big')+bytes(2)
+        encoded=zlib.compress(raw)
+        data+=b'2 0 obj\n<< /Type /XRef /Size 3 /W [1 4 2] /Root 1 0 R /Length '+str(len(encoded)).encode()+b' /Filter /FlateDecode >>\nstream\n'+encoded+b'\nendstream\nendobj\nstartxref\n'+str(offset).encode()+b'\n%%EOF\n'
+        self.assertEqual(stream_xrefs(data),{(1,0):9,(2,0):offset})
+        self.assertEqual(stream_xrefs(data.replace(b'startxref\n'+str(offset).encode(),b'startxref\n0')), {})
 
     def test_cross_window_frames_and_decode_failures(self):
         with tempfile.TemporaryDirectory() as directory:

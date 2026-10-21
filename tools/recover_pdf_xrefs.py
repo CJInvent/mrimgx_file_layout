@@ -1,7 +1,7 @@
 """Map frames using original PDF cross-reference addresses and NTFS file extents.
 
-Requires two distinct object headers agreeing on one frame base. Only complete
-classic xref tables with original startxref/EOF anchors are used; no rebuilt xref.
+Requires two distinct object headers agreeing on one frame base. Original classic
+tables or xref streams require original startxref/EOF anchors; no rebuilt xref.
 """
 import argparse
 import bisect
@@ -9,6 +9,8 @@ import collections
 import functools
 import hashlib
 import json
+import io
+import logging
 import pathlib
 import re
 import sqlite3
@@ -49,6 +51,27 @@ def classic_xrefs(data):
     return entries
 
 
+def stream_xrefs(data):
+    from pypdf import PdfReader
+    anchors=list(re.finditer(rb'startxref\s+(\d+)\s+%%EOF',data[-8192:]))
+    if not anchors:return {}
+    offset=int(anchors[-1][1]);header=data[offset:offset+8192]
+    if not re.match(rb'\d+\s+\d+\s+obj\b',header) or not re.search(rb'/Type\s*/XRef\b',header):return {}
+    class OriginalReader(PdfReader):
+        def _rebuild_xref_table(self,stream):raise ValueError('xref rebuild disallowed')
+    # Original xref bytes remain authoritative even if the beginning of the
+    # file is missing. The parser may warn about that header; never manufacture
+    # source bytes or let it reconstruct object addresses from signatures.
+    logger=logging.getLogger('pypdf');oldlevel=logger.level;logger.setLevel(logging.ERROR)
+    try:reader=OriginalReader(io.BytesIO(data),strict=False)
+    finally:logger.setLevel(oldlevel)
+    entries={}
+    for generation,objects in reader.xref.items():
+        for number,position in objects.items():
+            if number and 0<position<len(data):entries[(number,generation)]=position
+    return entries
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','inventory','baseline_manifest','evidence','mapping_directory','output'):ap.add_argument(name,type=pathlib.Path)
@@ -85,7 +108,7 @@ def main():
                     if end>start:
                         decoded=source_frame(m['source_offset'],m['stored_length']);offset=lo+start-physical;n=min(end-start,len(data)-offset)
                         if n>0:data[offset:offset+n]=decoded[start-base:start-base+n]
-            entries=classic_xrefs(data)
+            entries=classic_xrefs(data) or stream_xrefs(data)
             if entries:
                 parsed+=1
                 for (number,generation),offset in entries.items():
@@ -112,7 +135,7 @@ def main():
         f=rows[0][0];data=source_frame(f['source_offset'],f['stored_length'])
         if len(data)!=stride or hashlib.sha256(data).hexdigest()!=f['sha256'] or hashlib.md5(data).digest()!=f['md5']:raise ValueError('source revalidation')
         m=dict(partition=2,reserved=False,block=base//stride,disk_offset=origin+base,length=stride,source_offset=f['source_offset'],stored_length=f['stored_length'],decoded_md5=f['md5'].hex(),sha256=f['sha256'],frames=sorted({f['id'] for f,e in rows}),evidence=[dict(method='pdf-original-xref-mft-runlist',detail=e) for f,e in rows])
-        accepted.append(m);plan['partitions'][2].setdefault('overrides',{})[str(base//stride)]=dict(source_offset=f['source_offset'],stored_length=f['stored_length'],decoded_md5=f['md5'].hex(),reason='Multiple distinct PDF object headers map through original classic xref offsets and NTFS MFT runlists to one unique frame base; reconstructed, original digest unavailable.')
+        accepted.append(m);plan['partitions'][2].setdefault('overrides',{})[str(base//stride)]=dict(source_offset=f['source_offset'],stored_length=f['stored_length'],decoded_md5=f['md5'].hex(),reason='Multiple distinct PDF object headers map through original xref offsets and NTFS MFT runlists to one unique frame base; reconstructed, original digest unavailable.')
     (a.output/'accepted-mappings.json').write_text(json.dumps(accepted,indent=2));(a.output/'recovery-plan.json').write_text(json.dumps(plan,indent=2))
     result=dict(accepted_destinations=len(accepted),accepted_bytes=sum(m['length'] for m in accepted),pdf_additions=len(accepted)-previous,parsed_pdf_xrefs=parsed,conflicts=conflicts,rejected_pdf_xrefs=errors)
     (a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k!='rejected_pdf_xrefs'}),flush=True)
