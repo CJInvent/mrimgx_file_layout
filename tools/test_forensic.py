@@ -48,7 +48,7 @@ class ForensicTests(unittest.TestCase):
         mask=bytearray(b'\1'*len(data));template=bytearray(data);pieces=[(0,100,300),(0,members[1]['compressed_start']+10,300)]
         for item in members:off=item['header_offset'];mask[off:off+30]=bytes(30);template[off:off+30]=bytes(30)
         for off,logical,n in pieces:mask[logical:logical+n]=bytes(n);template[logical:logical+n]=bytes(n)
-        proof=original_crossing_crcs(template,mask,members,pieces);self.assertEqual(len(proof),2);self.assertTrue(independently_crossing(proof));cd=proof[0]['original_directory'];mask[cd['start']:cd['end']]=bytes(cd['end']-cd['start']);self.assertEqual(original_crossing_crcs(template,mask,members,pieces),[])
+        proof=original_crossing_crcs(template,mask,members,pieces);self.assertEqual(len(proof),2);self.assertTrue(independently_crossing(proof));self.assertFalse(independently_crossing([{k:v for k,v in p.items() if k!='original_directory'} for p in proof]));cd=proof[0]['original_directory'];mask[cd['start']:cd['end']]=bytes(cd['end']-cd['start']);self.assertEqual(original_crossing_crcs(template,mask,members,pieces),[])
         with self.assertRaises(ValueError):validate_archive(data,100)
         for invalid in (data+b'ignored trailing bytes',b'prefix'+data,data[:-1]):
             with self.assertRaises(ValueError):validate_archive(invalid)

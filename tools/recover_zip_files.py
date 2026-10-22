@@ -56,9 +56,11 @@ def original_crossing_crcs(template,mask,members,pieces):
             orig=original.get(item['name'])
             if orig is None or (orig.CRC,orig.file_size,orig.compress_size,orig.header_offset)!=(item['crc32'],item['decoded_bytes'],item['encoded_bytes'],item['header_offset']):return result
         for item in members:
-            if any(r['name']==item['name'] for r in result):continue
+            directory=dict(start=cd_offset,end=end,sha256=hashlib.sha256(template[cd_offset:end]).hexdigest(),end_record_sha256=hashlib.sha256(template[end:]).hexdigest())
+            existing=next((r for r in result if r['name']==item['name']),None)
+            if existing is not None:existing['original_directory']=directory;continue
             start=item['compressed_start'];stop=item['compressed_end'];missing=sum(max(0,min(stop,logical+n)-max(start,logical)) for offset,logical,n in pieces)
-            if missing:result.append(dict(name=item['name'],crc32=item['crc32'],missing_compressed_bytes=missing,compressed_start=start,compressed_end=stop,source='surviving-original-central-directory',original_directory=dict(start=cd_offset,end=end,sha256=hashlib.sha256(template[cd_offset:end]).hexdigest(),end_record_sha256=hashlib.sha256(template[end:]).hexdigest())))
+            if missing:result.append(dict(name=item['name'],crc32=item['crc32'],missing_compressed_bytes=missing,compressed_start=start,compressed_end=stop,source='surviving-original-central-directory',original_directory=directory))
     except (ValueError,OSError,zipfile.BadZipFile,struct.error):pass
     return result
 
@@ -66,7 +68,7 @@ def original_crossing_crcs(template,mask,members,pieces):
 def independently_crossing(crcs):
     for i,left in enumerate(crcs):
         for right in crcs[i+1:]:
-            if left['missing_compressed_bytes']>=256 and right['missing_compressed_bytes']>=256 and left['crc32']!=right['crc32'] and (left['compressed_end']<=right['compressed_start'] or right['compressed_end']<=left['compressed_start']):return True
+            if left.get('original_directory') and left['original_directory']==right.get('original_directory') and left['missing_compressed_bytes']>=256 and right['missing_compressed_bytes']>=256 and left['crc32']!=right['crc32'] and (left['compressed_end']<=right['compressed_start'] or right['compressed_end']<=left['compressed_start']):return True
     return False
 
 

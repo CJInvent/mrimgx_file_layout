@@ -56,8 +56,10 @@ CRC32 match is insufficient. MFT inventory respects a readable allocation bitmap
 The `zip-files` stage reconstructs one-hole ZIP and Office archive candidates,
 requiring original file boundaries and decompression/CRC checks of every member
 within expansion bounds. It records which checksums actually survived in original
-local headers or the complete surviving central directory. A unique candidate
-with two distinct original CRCs covering separate missing member bodies (at
+local headers or the complete surviving central directory. VHDX insertion
+requires the complete original central directory to survive, so every member's
+CRC and identity are original. A unique candidate with two distinct original
+CRCs covering separate missing member bodies (at
 least 256 bytes each), plus a unique distinctive full-frame boundary, can be
 placed after independent overlay validation. Other candidates remain external;
 newly supplied internal CRCs alone never authorize VHDX insertion.
