@@ -8,13 +8,33 @@ import argparse,collections,hashlib,io,json,pathlib,re,sqlite3,struct,zipfile,zl
 from contextlib import closing
 from recover_png_crc_grid import validate_png
 from pe_anchors import image_digest
+from recover_catalog_files import catalog_digest
+
+
+def pe_catalog_hashes(path):
+    hashes={}
+    if path is None:return hashes
+    algorithms={'1.3.14.3.2.26':'sha1','2.16.840.1.101.3.4.2.1':'sha256'}
+    with path.open() as stream:
+        for row in map(json.loads,stream):
+            algorithm=algorithms.get(row.get('algorithm_oid'))
+            if not algorithm or row.get('subject_oid')!='1.3.6.1.4.1.311.2.1.15' or not row.get('signature_hash_verified'):continue
+            names=[a['text'] for a in row.get('attributes',[]) if a.get('tag','').casefold()=='file' and a.get('text')]
+            key=(algorithm,row['digest'])
+            if key not in hashes or (names and not hashes[key]['member_names']):hashes[key]=dict(algorithm=algorithm,digest=row['digest'],catalog_record=row['catalog_record'],catalog_sha256=row['catalog_sha256'],reference=row.get('reference'),member_names=names,signature_hash_verified=True,hash_kind='pe-excluding-checksum-security-certificate',historical_filename_binding_proven=False)
+    return hashes
+
+
+def catalog_filename(validation):
+    names={pathlib.PureWindowsPath(n).name for n in validation.get('catalog_image_digest',{}).get('member_names',[]) if n}
+    return next(iter(names)) if len(names)==1 else None
 
 
 def exclusive_write(path,data):
     with path.open('xb' if isinstance(data,bytes) else 'x') as stream:stream.write(data)
 
 
-def carved_files(data,maximum=256*1024**2):
+def carved_files(data,maximum=256*1024**2,catalog_hashes=None):
     for match in re.finditer(rb'\x89PNG\r\n\x1a\n|\xff\xd8\xff|\x1f\x8b\x08|PK\x03\x04|MZ|RIFF|%PDF-',data):
         start=match.start();chunk=data[start:];kind=match.group();validation=None;length=None;suffix=None
         try:
@@ -63,7 +83,14 @@ def carved_files(data,maximum=256*1024**2):
                 pe=pefile.PE(data=chunk,fast_load=True);cert=pe.OPTIONAL_HEADER.DATA_DIRECTORY[4];length=max([pe.OPTIONAL_HEADER.SizeOfHeaders,cert.VirtualAddress+cert.Size]+[s.PointerToRawData+s.SizeOfRawData for s in pe.sections])
                 if not 0<length<=len(chunk):continue
                 # Unsigned headers alone do not establish complete file size.
-                validation=dict(embedded_image_digest=image_digest(chunk[:length]));suffix='exe'
+                try:validation=dict(embedded_image_digest=image_digest(chunk[:length]))
+                except Exception:
+                    if not catalog_hashes:raise
+                    proofs=[catalog_hashes[(alg,digest)] for alg in ('sha1','sha256') if (digest:=catalog_digest(chunk[:length],alg,'pe')) and (alg,digest) in catalog_hashes]
+                    if not proofs:raise ValueError('unsigned PE has no matching surviving verified catalog member')
+                    validation=dict(catalog_image_digest=proofs[-1],original_whole_file_digest_available=False,excluded_pe_fields_not_bound=True)
+                suffix='exe';hint=catalog_filename(validation)
+                if hint and re.fullmatch(r'\.[a-zA-Z0-9]{1,12}',pathlib.PureWindowsPath(hint).suffix):suffix=pathlib.PureWindowsPath(hint).suffix[1:].lower()
             elif kind==b'RIFF' and chunk[8:12] in (b'WEBP',b'WAVE',b'AVI '):
                 length=struct.unpack_from('<I',chunk,4)[0]+8
                 if not 12<=length<=len(chunk):continue
@@ -84,10 +111,10 @@ def carved_files(data,maximum=256*1024**2):
         if suffix and length and length<=maximum:yield start,bytes(chunk[:length]),suffix,validation
 
 
-def export(evidence,mappings,output):
+def export(evidence,mappings,output,catalog_members=None):
     output.mkdir(exist_ok=False);fragments=output/'fragments';fragments.mkdir();files=output/'files';files.mkdir();accepted=json.loads(mappings.read_text());placed={fid for m in accepted for fid in m['frames']};mapped_hashes=collections.defaultdict(list)
     for m in accepted:mapped_hashes[m['sha256']].append(m['disk_offset'])
-    db=sqlite3.connect((evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);counts=collections.Counter();seen_files={}
+    db=sqlite3.connect((evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);counts=collections.Counter();seen_files={};catalog_hashes=pe_catalog_hashes(catalog_members)
     with closing(db),(evidence/'orphan-decoded.bin').open('rb') as corpus,(output/'index.jsonl').open('x') as log:
         for fid,offset,length,source_offset,stored,sha in db.execute('SELECT id,export_offset,decoded_length,source_offset,stored_length,sha256 FROM frames ORDER BY id'):
             if fid in placed:continue
@@ -97,12 +124,12 @@ def export(evidence,mappings,output):
             records=[dict(decoded_offset=off,signature=sig,length=n,fixup_valid=bool(valid),record_number=number,details=json.loads(details) if details else None) for off,sig,n,valid,number,details in db.execute('SELECT decoded_offset,signature,length,fixup_valid,record_number,details FROM records WHERE frame=?',(fid,))]
             metadata=dict(schema_version=1,kind='unplaced-frame',placement_status='unresolved',vhdx_insertion_authorized=False,frame=fid,sha256=sha,bytes=length,source_offset=source_offset,encoded_bytes=stored,original_evidence_offset=offset,original_evidence=str(evidence.resolve()),possible_locations=[],content_also_at=mapped_hashes.get(sha,[]),recoverable_ntfs_records=records,note='Content equality does not prove this frame originally belonged at an equivalent location. No export adjacency implies disk order.')
             exclusive_write(path.with_suffix(path.suffix+'.json'),json.dumps(metadata,indent=2));log.write(json.dumps(dict(path=str(path.relative_to(output)),metadata=str(path.with_suffix(path.suffix+'.json').relative_to(output)),**metadata))+'\n');counts['unplaced_frames']+=1;counts['unplaced_bytes']+=length
-            for start,content,suffix,validation in carved_files(data):
+            for start,content,suffix,validation in carved_files(data,catalog_hashes=catalog_hashes):
                 digest=hashlib.sha256(content).hexdigest();key=(digest,suffix);provenance=dict(frame=fid,frame_offset=start,source_offset=source_offset,source_encoding='zstd-decoded-frame')
                 if key in seen_files:
                     side=seen_files[key];old=json.loads(side.read_text());old['provenance'].append(provenance);side.write_text(json.dumps(old,indent=2));continue
                 target=files/(digest+'.'+suffix);exclusive_write(target,content);side=target.with_suffix(target.suffix+'.json');seen_files[key]=side
-                info=dict(schema_version=1,kind='carved-file',file_type=suffix,sha256=digest,bytes=len(content),placement_status='unresolved',original_filename=None,possible_locations=[],vhdx_insertion_authorized=False,validation=validation,provenance=[provenance],note='Internal file validation is distinct from a known original filename, filesystem address, or original whole-file digest.')
+                info=dict(schema_version=1,kind='carved-file',file_type=suffix,sha256=digest,bytes=len(content),placement_status='unresolved',original_filename=catalog_filename(validation),possible_locations=[],vhdx_insertion_authorized=False,validation=validation,provenance=[provenance],note='Internal file validation is distinct from a known original filename, filesystem address, or original whole-file digest.')
                 exclusive_write(side,json.dumps(info,indent=2));counts['carved_files']+=1;counts['carved_file_bytes']+=len(content)
     summary=dict(counts=counts,scope='All unplaced decoded frames and bounded internally checked files are outside the VHDX. JSON sidecars retain known metadata, provenance and uncertainty. Original raw encoded failures and metadata remain in the unchanged evidence directory.');(output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True);return summary
 
@@ -110,4 +137,5 @@ def export(evidence,mappings,output):
 if __name__=='__main__':
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('evidence','mappings','output'):ap.add_argument(name,type=pathlib.Path)
-    a=ap.parse_args();export(a.evidence,a.mappings,a.output)
+    ap.add_argument('--catalog-members',type=pathlib.Path,help='optional verified catalog-member inventory for unsigned PE candidates')
+    a=ap.parse_args();export(a.evidence,a.mappings,a.output,a.catalog_members)

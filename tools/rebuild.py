@@ -11,8 +11,27 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes,metadata-rescue'
+DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
 ACTIVE_RUNNER=None
+
+
+def mark_manifest_restorations(recovered,verified,manifest_records,written):
+    """Distinguish external copies of proven restored files from unresolved ones."""
+    count=0
+    for side in recovered.rglob('*.json'):
+        meta=json.loads(side.read_text())
+        if not isinstance(meta,dict) or meta.get('kind') not in ('carved-file','whole-file-hash-candidate','catalog-sequence-candidate','zip-reconstruction-candidate'):continue
+        resolved=[r['record'] for r in meta.get('possible_locations',[]) if r.get('record') in manifest_records and verified.get(r['record'],{}).get('sha256')==meta.get('sha256')]
+        if not resolved:continue
+        path=side.with_suffix('')
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=meta['sha256']:raise ValueError('rescued candidate file changed before metadata resolution: '+str(path))
+        meta.update(placement_status='original-component-manifest-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_rebuild=written,validated_records=sorted(set(resolved)),historical_component_version_binding=True)
+        meta.setdefault('validation',{}).update(original_whole_file_digest_available=True,original_component_manifest_rechecked=True,historical_path_binding_proven=True,excluded_pe_fields_not_bound=False)
+        meta['original_component_manifest_bindings']=[binding for number in sorted(set(resolved)) for binding in verified[number].get('original_manifest_bindings',[])]
+        for location in meta['possible_locations']:
+            if location.get('record') in resolved:location['placement_confirmed']=True
+        side.write_text(json.dumps(meta,indent=2));count+=1
+    return count
 
 
 def corrupted(manifest):
@@ -61,6 +80,7 @@ def main():
     ap.add_argument('--output',type=pathlib.Path,required=True);ap.add_argument('--native',type=pathlib.Path);ap.add_argument('--baseline',type=pathlib.Path);ap.add_argument('--manifest',type=pathlib.Path);ap.add_argument('--evidence',type=pathlib.Path);ap.add_argument('--mft',type=pathlib.Path);ap.add_argument('--inventory',type=pathlib.Path);ap.add_argument('--mapping-directory',type=pathlib.Path)
     ap.add_argument('--qemu-img',type=pathlib.Path,required=True);ap.add_argument('--seven-zip',type=pathlib.Path,required=True)
     ap.add_argument('--bit-repair-exe',type=pathlib.Path,help='defaults to repair_frame_bits.exe next to the native converter')
+    ap.add_argument('--reuse-bit-negative-attempts',type=pathlib.Path,help='reuse completed zero-match native tests only with identical encoded input, original MD5, decoded length and full byte coverage')
     ap.add_argument('--stages',default=DEFAULT_STAGES);ap.add_argument('--rounds',type=int,default=0,help='0 repeats until no new placements; a bound is reported as a limit')
     ap.add_argument('--per-file-budget',type=int,default=300000);ap.add_argument('--metadata-identity',action='store_true',help='also permit separately labeled filename/size/exact-time duplicate inferences')
     ap.add_argument('--existing-clone',type=pathlib.Path);ap.add_argument('--clone-manifest',type=pathlib.Path);ap.add_argument('--previous-refinement',type=pathlib.Path);ap.add_argument('--previous-validation',type=pathlib.Path)
@@ -106,7 +126,9 @@ def main():
         bit_output=a.output/'indexed-bit-repair';repair_exe=a.bit_repair_exe or ((a.native.parent if a.native else TOOLS.parent/'build')/'repair_frame_bits.exe')
         try:
             if not repair_exe.is_file():raise ValueError('bit-repair executable unavailable')
-            runner.call('recover_indexed_bit_frames',[a.source,manifest,evidence,a.mapping_directory or '-',repair_exe,bit_output])
+            bit_args=[a.source,manifest,evidence,a.mapping_directory or '-',repair_exe,bit_output]
+            if a.reuse_bit_negative_attempts:bit_args+=['--reuse-negative-attempts',a.reuse_bit_negative_attempts]
+            runner.call('recover_indexed_bit_frames',bit_args)
             repairs=json.loads((bit_output/'supplemental-placements.json').read_text())
             if repairs and not a.search_only:
                 # Original-index repairs can be checked before an NTFS parser
@@ -135,7 +157,7 @@ def main():
         prep=a.output/'filesystem';runner.call('prepare_rebuild',[baseline,manifest,evidence/'layout.json',prep]);mft=prep/'mft.bin';inventory=prep/'affected-files.jsonl'
     current=a.mapping_directory
     if current is None:current=runner.call('map_orphan_frames',[a.source,a.plan,manifest,evidence,baseline,mft,a.output/'initial-mapping','--file-inventory',inventory,'--pe-anchors','--appx-anchors'],a.output/'initial-mapping')
-    initial=current;round_number=0;fixed_point=False
+    initial=current;round_number=0;fixed_point=False;catalog_members_for_rescue=None
     def maps(path):return json.loads((path/'accepted-mappings.json').read_text())
     def stage(tool,args):
         nonlocal current
@@ -211,10 +233,19 @@ def main():
                 except Exception as e:
                     _audit_caught(e, locals(), expected=False, site='rebuild.py:190')
                     errors.append(dict(tool=name,error=str(e)))
+            elif name=='manifest-hashes':
+                collected=a.output/f'manifest-hashes-{round_number:03d}'
+                try:
+                    runner.call('collect_manifest_hashes',[a.source,baseline,mft,inventory,manifest,evidence,current,collected])
+                    if json.loads((collected/'hash-targets.json').read_text()):stage('recover_file_hashes',[a.source,baseline,mft,manifest,evidence,current,collected/'hash-targets.json'])
+                except Exception as e:
+                    _audit_caught(e,locals(),site='component-manifest-hashes')
+                    errors.append(dict(tool=name,error=str(e)))
             elif name=='catalog-hashes':
                 collected=a.output/f'catalog-hashes-{round_number:03d}'
                 try:
                     runner.call('collect_catalog_hashes',[a.source,baseline,mft,manifest,evidence,current,collected])
+                    catalog_members_for_rescue=collected/'catalog-members.jsonl'
                     stage('recover_catalog_files',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl'])
                     out=a.output/f'{runner.serial+1:04d}-recover_catalog_sequences'
                     runner.call('recover_catalog_sequences',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl',out,'--per-file-budget',a.per_file_budget])
@@ -223,12 +254,12 @@ def main():
                     _audit_caught(e, locals(), expected=False, site='rebuild.py:199')
                     errors.append(dict(tool=name,error=str(e)))
         if len(maps(current))==before:fixed_point=True;break
-    validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated]);current=validated
+    validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated,'--baseline-manifest',manifest]);current=validated
     supplements={}
     if a.previous_refinement:
         for row in map(json.loads,a.previous_refinement.open()):
             if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
-    paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))
+    paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))+list(a.output.glob('*-recover_file_hashes/supplemental-placements.json'))
     if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
     for path in paths:
         for m in json.loads(path.read_text()):
@@ -247,7 +278,9 @@ def main():
         runner.process('qemu-container-check',[str(a.qemu_img),'check',str(revised)])
     runner.call('export_unresolved',[evidence,current/'accepted-mappings.json',a.output/'decoded-residual'])
     runner.call('refinement_coverage',[a.source,evidence,current/'accepted-mappings.json',a.output/'encoded-residual'])
-    runner.call('rescue_unplaced_files',[evidence,current/'accepted-mappings.json',a.output/'recovered_files'])
+    rescue_args=[evidence,current/'accepted-mappings.json',a.output/'recovered_files']
+    if catalog_members_for_rescue:rescue_args+=['--catalog-members',catalog_members_for_rescue]
+    runner.call('rescue_unplaced_files',rescue_args)
     if 'metadata-rescue' in requested:runner.call('rescue_unreadable_records',[a.source,baseline,mft,manifest,evidence,current,a.output/'recovered_files/metadata-records'])
     shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')
     if audit_output and (audit_output/'partial-decoded.bin').exists():
@@ -258,19 +291,29 @@ def main():
         if (bit_output/'summary.json').exists():shutil.copy2(bit_output/'summary.json',target/'summary.json')
     candidates=a.output/'recovered_files/candidates'
     verified_files={r.get('record'):r for r in json.loads((validated/'file-validation.json').read_text()) if r.get('valid')}
+    supplemental_proof=a.output/'supplemental-validation/summary.json'
+    if supplemental_proof.exists():
+        for r in json.loads(supplemental_proof.read_text())['validated_files_or_frames']:
+            if r.get('valid') and r.get('kind')=='component-manifest-file-slices':verified_files[r['record']]=r
     bound_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-inf-catalog-reference-and-named-member'}
     zip_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='zip-original-member-crcs-and-directory'}
-    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))+list(a.output.glob('*-recover_zip_files/recovered_files'))):
+    hash_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='original-whole-file-hash-completion'}
+    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))+list(a.output.glob('*-recover_zip_files/recovered_files'))+list(a.output.glob('*-recover_file_hashes/recovered_files'))):
         target=candidates/directory.parent.name;target.mkdir(parents=True,exist_ok=False)
         for item in directory.iterdir():
             if not item.is_file():continue
             shutil.copy2(item,target/item.name)
-            if item.name.endswith('.bin.json'):
+            if item.name.endswith('.json') and item.with_suffix('').is_file():
                 meta=json.loads(item.read_text())
                 if meta.get('kind')=='catalog-sequence-candidate':
                     resolved=[r['record'] for r in meta.get('possible_locations',[]) if r['record'] in bound_records and verified_files.get(r['record'],{}).get('sha256')==meta['sha256']]
                     if resolved:
                         meta.update(placement_status='original-inf-catalog-and-runlist-validated',historical_component_version_binding=True,vhdx_insertion_authorized=True,vhdx_written_by_rebuild=not a.search_only,validated_records=resolved,placement_validation=str((validated/'file-validation.json').resolve()))
+                        (target/item.name).write_text(json.dumps(meta,indent=2))
+                elif meta.get('kind')=='whole-file-hash-candidate':
+                    resolved=[r['record'] for r in meta.get('possible_locations',[]) if r['record'] in hash_records and verified_files.get(r['record'],{}).get('sha256')==meta['sha256']]
+                    if resolved:
+                        meta.update(content_also_restored_by_validated_frames=not a.search_only,validated_records=resolved,placement_validation=str((validated/'file-validation.json').resolve()))
                         (target/item.name).write_text(json.dumps(meta,indent=2))
                 elif meta.get('kind')=='zip-reconstruction-candidate':
                     resolved=[r['record'] for r in meta.get('possible_locations',[]) if r['record'] in zip_records and verified_files.get(r['record'],{}).get('sha256')==meta['sha256']]
@@ -278,6 +321,9 @@ def main():
                         meta.update(placement_status='original-independent-crcs-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_rebuild=not a.search_only,validated_records=resolved,placement_validation=str((validated/'file-validation.json').resolve()))
                         (target/item.name).write_text(json.dumps(meta,indent=2))
     runner.call('enrich_recovered_metadata',[a.output/'recovered_files',baseline,mft,inventory,evidence/'layout.json'])
+    manifest_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-component-manifest-file-hash'}
+    manifest_records.update(e['record'] for m in supplements.values() for e in m.get('evidence',[]) if e.get('method')=='component-manifest-validated-file-slice')
+    mark_manifest_restorations(a.output/'recovered_files',verified_files,manifest_records,not a.search_only)
     for path in protected:
         if (path.stat().st_size,path.stat().st_mtime_ns)!=stats[str(path.resolve())]:raise ValueError('protected input changed')
     summary=dict(schema_version=1,corruption_detected=True,vhdx=str(revised.resolve()) if not a.search_only else None,search_only=a.search_only,accepted_mappings=len(maps(current)),supplemental_destinations=len(supplements),supplemental_bytes=sum(m['length'] for m in supplements.values()),mapping_directory=str(current.resolve()),recovered_files=str((a.output/'recovered_files').resolve()),rounds=round_number,no_additions_in_last_round=fixed_point,all_requested_stages_succeeded=not errors,stage_errors=errors,enabled_stages=sorted(requested),excluded_stages=sorted(set(DEFAULT_STAGES.split(','))-requested),protected_input_stats_unchanged=True,limits=dict(per_file_budget=a.per_file_budget,rounds=a.rounds,metadata_identity=a.metadata_identity),scope='Unresolved placements are exported separately. Full-frame residual accounting retains complete enclosing frames for partial validated slices, whose known disk ranges are listed separately. Convergence means no further additions from the implemented bounded searches, never universal unmappability or a complete/bootable filesystem.')

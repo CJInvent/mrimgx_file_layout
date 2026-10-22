@@ -6,7 +6,7 @@ at each address among all tested successful reconstructions. No donor bytes are
 written. Inputs, baseline and original evidence stay read-only.
 """
 from rebuild_audit import caught as _audit_caught
-import argparse,bisect,collections,functools,hashlib,itertools,json,pathlib,sqlite3
+import argparse,bisect,collections,functools,hashlib,itertools,json,pathlib,re,sqlite3
 import zstandard
 from safe_vhdx import VHDX
 from mapped_volume import MappedVolume
@@ -26,12 +26,42 @@ def reconstruct(template,bases,pieces,assignment,contents):
     return data
 
 
+def export_candidates(output,record,target,template,bases,pieces,solutions,contents,frames,decode,origin):
+    """Keep hash-matched file bytes even when their enclosing frame is ambiguous."""
+    saved=[];seen=set()
+    for assignment in solutions:
+        data=bytes(reconstruct(template,bases,pieces,assignment,contents));sha=hashlib.sha256(data).hexdigest()
+        if sha in seen:continue
+        if hashlib.new(target['algorithm'],data).hexdigest().lower()!=target['digest'].lower():raise ValueError('candidate file hash changed')
+        provenance=[]
+        for base,digest in zip(bases,assignment):
+            frame=frames[digest][0];original=decode(frame[1],frame[2])
+            if len(original)!=len(contents[digest]) or hashlib.sha256(original).hexdigest()!=digest or hashlib.md5(original).digest()!=frame[5]:raise ValueError('source mismatch during file candidate rescue')
+            for offset,logical,length in pieces[base]:provenance.append(dict(frame=frame[0],source_offset=frame[1],encoded_bytes=frame[2],frame_offset=offset,file_offset=logical,length=length,frame_sha256=digest,decoded_md5=frame[5].hex()))
+        suffix=pathlib.PureWindowsPath(record.filename or '').suffix.lower()
+        if not re.fullmatch(r'\.[a-z0-9]{1,12}',suffix):suffix='.bin'
+        path=output/(str(target['record'])+'-'+sha+suffix)
+        try:original_path=record.full_path()
+        except Exception as e:_audit_caught(e,dict(number=target['record']),site='file-hash-candidate-path');original_path=None
+        constraint=dict(algorithm=target['algorithm'],expected_digest=target['digest'],hash_source=target.get('hash_source'))
+        info=dict(schema_version=1,kind='whole-file-hash-candidate',file_type=suffix[1:],sha256=sha,bytes=len(data),original_filename=record.filename,placement_status='whole-file-hash-matched-path-candidate',vhdx_insertion_authorized=False,possible_locations=[dict(record=target['record'],sequence=record.header.SequenceNumber,path=original_path,names=record.filenames(ignore_dos=True),size=len(data),physical_cluster_runs=list(record.dataruns()),partition=2,cluster_bytes=4096,partition_disk_offset=origin,placement_confirmed=False)],validation=dict(algorithm=target['algorithm'],expected_digest=target['digest'],whole_file_hash_verified=True,source_frames_redecoded_and_verified=True,historical_path_binding_proven=False),hash_evidence=[constraint],provenance=provenance,source_assignments_matching=len(solutions),note='File bytes match an independently supplied whole-file digest and original runlist projection. This does not authorize the unrelated bytes surrounding the file in a source frame. Original filename/path/package association remains explicit evidence for review.')
+        side=path.with_suffix(path.suffix+'.json')
+        if path.exists():
+            if path.read_bytes()!=data:raise ValueError('candidate file changed')
+            info=json.loads(side.read_text())
+            if constraint not in info['hash_evidence']:info['hash_evidence'].append(constraint)
+        else:
+            with path.open('xb') as stream:stream.write(data)
+        side.write_text(json.dumps(info,indent=2));seen.add(sha);saved.append(dict(path=str(path.resolve()),sha256=sha,bytes=len(data)))
+    return saved
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','baseline_manifest','evidence','mapping_directory','targets','output'):ap.add_argument(name,type=pathlib.Path)
     ap.add_argument('--maximum-file-size',type=int,default=64*1024**2)
     ap.add_argument('--per-file-budget',type=int,default=200000)
-    a=ap.parse_args();a.output.mkdir(exist_ok=False)
+    a=ap.parse_args();a.output.mkdir(exist_ok=False);candidate_output=a.output/'recovered_files';candidate_output.mkdir()
     accepted=json.loads((a.mapping_directory/'accepted-mappings.json').read_text());previous=len(accepted);plan=json.loads((a.mapping_directory/'recovery-plan.json').read_text());p=json.loads((a.evidence/'layout.json').read_text())['disks'][0]['partitions'][2];origin=p['_geometry']['start'];stride=p['_header']['block_size'];mapped={m['disk_offset']-origin:m for m in accepted if m['partition']==2};ranges=[]
     for row in map(json.loads,a.baseline_manifest.open()):
         if row.get('partition')==2 and row.get('operation')=='range' and row.get('status') in ('unknown-zero-index','unrecoverable'):ranges.append((row['disk_offset']-origin,row['disk_offset']+row['length']-origin))
@@ -53,7 +83,7 @@ def main():
                 contents[f[6]]=data
     ordered=list(dict.fromkeys(sequence));index_sources=dict(db.execute('SELECT block,source_offset FROM entries WHERE partition=2 AND reserved=0 AND incorporated=1 AND stored_length>0'))
     for base,m in mapped.items():index_sources[base//stride]=m['source_offset']
-    index_blocks=sorted(index_sources);source_positions=[frames[sha][0][1] for sha in ordered];pending=collections.defaultdict(list);reports=[]
+    index_blocks=sorted(index_sources);source_positions=[frames[sha][0][1] for sha in ordered];pending=collections.defaultdict(list);reports=[];file_slices=[]
     for target in json.loads(a.targets.read_text()):
         report=dict(target=target,checked=0);reports.append(report)
         try:
@@ -64,7 +94,9 @@ def main():
             if not bases:report['skipped']='no unknown frames';continue
             pieces={base:frame_pieces(extents,base,stride) for base in bases};bases.sort(key=lambda base:pieces[base][0][1]);template=record.open().read();solutions=[];seen=set()
             if len(template)!=size:raise ValueError('short target read')
+            manifest_bound=isinstance(target.get('hash_source'),dict) and target['hash_source'].get('kind')=='original-component-manifest-file-hash'
             def check(assignment):
+                if solutions and manifest_bound and algorithm=='sha256':return
                 if assignment in seen or report['checked']>=a.per_file_budget:return
                 seen.add(assignment);report['checked']+=1
                 data=reconstruct(template,bases,pieces,assignment,contents)
@@ -90,10 +122,23 @@ def main():
                                 for assignment in itertools.permutations(pool,len(bases)):check(assignment)
             report.update(missing_frames=len(bases),solutions=len(solutions))
             if solutions:
+                report['rescued_files']=export_candidates(candidate_output,record,target,template,bases,pieces,solutions,contents,frames,decode,origin)
+                if manifest_bound:
+                    report['sha256_match_short_circuited']=algorithm=='sha256'
+                    file_hashes={hashlib.sha256(reconstruct(template,bases,pieces,s,contents)).hexdigest() for s in solutions}
+                    if len(file_hashes)==1:
+                        file_sha=next(iter(file_hashes))
+                        for base,sha in zip(bases,solutions[0]):
+                            f=frames[sha][0]
+                            for off,logical,n in pieces[base]:
+                                data=contents[sha][off:off+n];proof=dict(method='component-manifest-validated-file-slice',record=target['record'],file_size=size,algorithm=algorithm,expected_digest=expected.hex(),file_sha256_observed=file_sha,hash_source=target['hash_source'])
+                                file_slices.append((base,dict(partition=2,reserved=False,block=base//stride,disk_offset=origin+base+off,length=n,source_offset=f[1],stored_length=f[2],source_decoded_length=stride,source_decoded_md5=f[5].hex(),source_decoded_sha256=sha,decoded_slice_offset=off,decoded_md5=hashlib.md5(data).hexdigest(),sha256=hashlib.sha256(data).hexdigest(),evidence=[proof])))
                 for i,base in enumerate(bases):
                     matches={solution[i] for solution in solutions}
                     if len(matches)!=1:continue
                     sha=matches.pop();parts=b''.join(contents[sha][off:off+n] for off,logical,n in pieces[base])
+                    if manifest_bound and (sum(n for off,logical,n in pieces[base])!=stride or sorted((off,off+n) for off,logical,n in pieces[base])[0][0]!=0):
+                        report.setdefault('manifest_file_only_boundaries',[]).append(base);continue
                     # The file hash excludes bytes outside this file. Check
                     # every corpus frame for alternatives identical inside
                     # the file, even if our sequence search did not try them.
@@ -115,8 +160,16 @@ def main():
         if len(data)!=stride or hashlib.sha256(data).hexdigest()!=sha or hashlib.md5(data).digest()!=f[5]:raise ValueError('source mismatch')
         accepted.append(dict(partition=2,reserved=False,block=base//stride,disk_offset=origin+base,length=stride,source_offset=f[1],stored_length=f[2],decoded_md5=f[5].hex(),sha256=sha,frames=[x[0] for x in frames[sha]],evidence=[e for s,e in items]))
         plan['partitions'][2].setdefault('overrides',{})[str(base//stride)]=dict(source_offset=f[1],stored_length=f[2],decoded_md5=f[5].hex(),reason='Original whole-file digest plus MFT runlist validates missing source frame; source order only nominated candidates.')
+    placed={m['disk_offset']-origin for m in accepted if m['partition']==2};slices={}
+    for base,m in file_slices:
+        if base in placed:continue
+        key=(m['disk_offset'],m['length'])
+        if key in slices and slices[key]['sha256']!=m['sha256']:raise ValueError('conflicting original manifest file slices')
+        slices.setdefault(key,m)
+    (a.output/'supplemental-placements.json').write_text(json.dumps(list(slices.values()),indent=2))
     (a.output/'accepted-mappings.json').write_text(json.dumps(accepted,indent=2));(a.output/'recovery-plan.json').write_text(json.dumps(plan,indent=2));(a.output/'file-hash-evidence.json').write_text(json.dumps(reports,indent=2))
-    result=dict(accepted_destinations=len(accepted),accepted_bytes=sum(m['length'] for m in accepted),new_placements=len(accepted)-previous,targets=len(reports),conflicts=conflicts);(a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)
+    rescued={f['path']:f['bytes'] for report in reports for f in report.get('rescued_files',[])}
+    result=dict(accepted_destinations=len(accepted),accepted_bytes=sum(m['length'] for m in accepted),new_placements=len(accepted)-previous,targets=len(reports),rescued_files=len(rescued),rescued_file_bytes=sum(rescued.values()),supplemental_destinations=len(slices),supplemental_bytes=sum(m['length'] for m in slices.values()),conflicts=conflicts);(a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)
 
 
 if __name__=='__main__':main()

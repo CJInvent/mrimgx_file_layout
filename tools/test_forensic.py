@@ -41,6 +41,51 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_resolved_component_file_metadata_requires_matching_proven_record(self):
+        from rebuild import mark_manifest_restorations
+        content=b'original file contents';sha=hashlib.sha256(content).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);path=root/'candidate.bin';path.write_bytes(content);side=root/'candidate.bin.json';meta=dict(kind='carved-file',sha256=sha,validation=dict(excluded_pe_fields_not_bound=True),possible_locations=[dict(record=7,placement_confirmed=False)]);side.write_text(json.dumps(meta));verified={7:dict(sha256=sha,original_manifest_bindings=[dict(manifest_record=9)])};self.assertEqual(mark_manifest_restorations(root,verified,{8},True),0);self.assertEqual(mark_manifest_restorations(root,verified,{7},True),1);result=json.loads(side.read_text());self.assertTrue(result['vhdx_written_by_rebuild']);self.assertTrue(result['possible_locations'][0]['placement_confirmed']);self.assertFalse(result['validation']['excluded_pe_fields_not_bound']);self.assertEqual(result['original_component_manifest_bindings'],[dict(manifest_record=9)]);path.write_bytes(b'changed')
+            with self.assertRaises(ValueError):mark_manifest_restorations(root,verified,{7},True)
+
+    def test_component_manifest_hash_requires_original_path_identity_and_transform(self):
+        import base64
+        from component_manifest_hashes import manifest_constraint,component_paths,verify_binding
+        from types import SimpleNamespace
+        target='Windows\\WinSxS\\amd64_microsoft.windows.c..-controls.resources_6595b64144ccf1df_5.82.26100.8117_ru-ru_0123456789abcdef\\comctl32.dll.mui';manifest='Windows\\WinSxS\\Manifests\\'+pathlib.PureWindowsPath(target).parent.name+'.manifest';digest=hashlib.sha256(b'original contents').hexdigest();value=base64.b64encode(bytes.fromhex(digest)).decode();xml=('<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:v2="urn:schemas-microsoft-com:asm.v2" xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><assemblyIdentity name="Microsoft.Windows.Common-Controls.Resources" version="5.82.26100.8117" processorArchitecture="amd64" language="ru-RU" publicKeyToken="6595b64144ccf1df"/><file name="comctl32.dll.mui"><v2:hash><ds:Transforms><ds:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha256"/><ds:DigestValue>'+value+'</ds:DigestValue></v2:hash></file></assembly>').encode()
+        constraint=manifest_constraint(target,manifest,xml);self.assertEqual(constraint['digest'],digest);self.assertEqual(constraint['algorithm'],'sha256');self.assertIn(manifest,component_paths(target)['manifest_paths']);self.assertIsNone(component_paths('<broken_reference_0x5#7>\\'+target))
+        for bad in (xml.replace(b'ru-RU',b'en-US'),xml.replace(b'5.82.26100.8117',b'5.82.26100.8118'),xml.replace(b'HashTransforms.Identity',b'HashTransforms.PEImage'),b'<!DOCTYPE assembly [<!ENTITY x "bad">]>'+xml):
+            with self.assertRaises(ValueError):manifest_constraint(target,manifest,bad)
+        with self.assertRaises(ValueError):manifest_constraint(target,'elsewhere\\same.manifest',xml)
+        record=SimpleNamespace(header=SimpleNamespace(SequenceNumber=3,Flags=1),full_paths=lambda **kw:[target]);binding=dict(kind='original-component-manifest-file-hash',target_path=target,target_sequence=3,manifest_record=4,manifest_sequence=9,manifest_path=manifest,manifest_sha256=hashlib.sha256(xml).hexdigest());reader=SimpleNamespace(read=lambda number,path:(SimpleNamespace(header=SimpleNamespace(SequenceNumber=9,Flags=1)),xml));self.assertEqual(verify_binding(reader,record,binding,'sha256',digest)['digest'],digest);binding['manifest_sha256']='0'*64
+        with self.assertRaises(ValueError):verify_binding(reader,record,binding,'sha256',digest)
+
+    def test_component_manifest_reader_rejects_unknown_original_data(self):
+        import io
+        from types import SimpleNamespace
+        from component_manifest_hashes import OriginalManifestReader
+        content=b'original manifest';path='Windows\\sample.manifest';record=SimpleNamespace(header=SimpleNamespace(Flags=1),resident=False,attributes=SimpleNamespace(DATA=[SimpleNamespace(name='',header=SimpleNamespace(flags=0))]),full_paths=lambda **kw:[path],size=lambda:len(content),dataruns=lambda:[(10,1)],open=lambda:io.BytesIO(content));reader=OriginalManifestReader.__new__(OriginalManifestReader);reader.fs=SimpleNamespace(mft=SimpleNamespace(get=lambda n:record));reader.ranges=[(40960,45056)];reader.ends=[45056]
+        with self.assertRaisesRegex(ValueError,'unavailable'):reader.read(1,path)
+        reader.ranges=[];reader.ends=[];self.assertEqual(reader.read(1,path)[1],content)
+
+    def test_unsigned_pe_carving_requires_verified_catalog_digest(self):
+        import struct
+        from recover_catalog_files import catalog_digest
+        from rescue_unplaced_files import pe_catalog_hashes
+        data=bytearray(1024);data[:2]=b'MZ';struct.pack_into('<I',data,60,128);data[128:132]=b'PE\0\0';struct.pack_into('<HHIIIHH',data,132,0x14c,1,0,0,0,224,0x2102);optional=152;struct.pack_into('<H',data,optional,0x10b)
+        for offset,value in ((32,4096),(36,512),(56,8192),(60,512),(92,16)):struct.pack_into('<I',data,optional+offset,value)
+        struct.pack_into('<H',data,optional+68,3);section=376;data[section:section+8]=b'.rdata\0\0';struct.pack_into('<IIII',data,section+8,512,4096,512,512);struct.pack_into('<I',data,section+36,0x40000040);data[512:]=bytes((i*23+5)%256 for i in range(512));digest=catalog_digest(data,'sha256','pe');row=dict(algorithm_oid='2.16.840.1.101.3.4.2.1',subject_oid='1.3.6.1.4.1.311.2.1.15',digest=digest,catalog_record=1,catalog_sha256='0'*64,signature_hash_verified=False,attributes=[dict(tag='File',text='sample.dll.mui')])
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'members.jsonl';path.write_text(json.dumps(row)+'\n');self.assertEqual(pe_catalog_hashes(path),{});row['signature_hash_verified']=True;path.write_text(json.dumps(row)+'\n');hashes=pe_catalog_hashes(path);self.assertEqual(list(carved_files(data)),[]);files=list(carved_files(data,catalog_hashes=hashes));self.assertEqual(len(files),1);self.assertEqual(files[0][1],data);self.assertEqual(files[0][2],'mui');self.assertTrue(files[0][3]['excluded_pe_fields_not_bound']);self.assertFalse(files[0][3]['catalog_image_digest']['historical_filename_binding_proven']);corrupt=bytearray(data);corrupt[700]^=1;self.assertEqual(list(carved_files(corrupt,catalog_hashes=hashes)),[])
+
+    def test_hash_rescue_exports_small_files_with_ambiguous_enclosing_frames(self):
+        from recover_file_hashes import export_candidates
+        from types import SimpleNamespace
+        content=bytes((i*37)%256 for i in range(944));first=bytearray(b'A'*143360);first[64:64+len(content)]=content;second=bytearray(first);second[-1]=66;contents={hashlib.sha256(data).hexdigest():bytes(data) for data in (first,second)};digests=list(contents);frames={sha:[(i,i,143360,0,143360,hashlib.md5(data).digest(),sha)] for i,(sha,data) in enumerate(contents.items())};decode=lambda off,n:contents[digests[off]];record=SimpleNamespace(filename='small.mof',header=SimpleNamespace(SequenceNumber=3),full_path=lambda:'Windows\\small.mof',filenames=lambda **kw:['small.mof'],dataruns=lambda:[(10,1)]);target=dict(record=7,algorithm='md5',digest=hashlib.md5(content).hexdigest(),hash_source=dict(package_record=4))
+        with tempfile.TemporaryDirectory() as directory:
+            output=pathlib.Path(directory);args=(output,record,target,bytes(len(content)),[0],{0:[(64,0,len(content))]},[(sha,) for sha in digests],contents,frames,decode,4096);saved=export_candidates(*args);self.assertEqual(len(saved),1);path=pathlib.Path(saved[0]['path']);self.assertEqual(path.read_bytes(),content);meta=json.loads(path.with_suffix('.mof.json').read_text());self.assertFalse(meta['vhdx_insertion_authorized']);self.assertEqual(meta['source_assignments_matching'],2);self.assertEqual(meta['possible_locations'][0]['record'],7);self.assertTrue(meta['validation']['source_frames_redecoded_and_verified']);target['hash_source']=dict(package_record=5);self.assertEqual(len(export_candidates(*args)),1);self.assertEqual(len(json.loads(path.with_suffix('.mof.json').read_text())['hash_evidence']),2)
+            with self.assertRaisesRegex(ValueError,'source mismatch'):export_candidates(*(args[:9]+(lambda off,n:b'bad',)+args[10:]))
+
     def test_malformed_filename_rescue_keeps_data_and_original_metadata(self):
         import struct
         from dissect.ntfs.mft import MftRecord

@@ -42,6 +42,8 @@ header, compressed-block and checksum cases retain full decoder checks. The
 standalone bit-repair tool accepts `--reuse-negative-attempts DIRECTORY` only
 when a completed zero-match result records the same original MD5, decoded
 length, exhaustive encoded-byte count, and byte-identical original encoded input.
+The rebuild wrapper exposes this as `--reuse-bit-negative-attempts DIRECTORY`;
+cache paths, digests and reused/new test counts remain in the audit.
 
 The default stages include original/partial index hashes, NTFS directory VCNs
 and fixups, Chromium key identities, Appx hashes, cabinet checksums and complete
@@ -73,6 +75,24 @@ references, runlists and matching surviving directory names in JSON. Only a
 private parser copy substitutes unpaired surrogate code units; no filesystem
 metadata is rewritten. Extension records, attribute lists and incomplete data
 remain outside this bounded fallback.
+Whole-file hash searches export matching complete files even when a small or
+repetitive file cannot establish its entire enclosing frame's placement. These
+exports retain package/hash evidence, candidate NTFS paths/runlists and exact
+source-frame provenance; the surrounding frame stays unplaced unless separately
+validated.
+Residual PE carving can also use surviving signature-checked catalog image
+digests to rescue complete unsigned DLL/MUI candidates. It records excluded PE
+fields and catalog filename hints separately from whole-file and historical
+placement proof, and keeps these files outside the VHDX.
+The `manifest-hashes` stage reads intact original component manifests, requires
+their assembly identity to match the original component directory, and uses
+only explicit Identity-transform whole-file hashes. Unknown/reconstructed
+manifest bytes cannot authorize another placement. Independently validated
+file slices can restore a small file without placing unrelated enclosing bytes.
+Component hashes authorize full frames only when their entire contents lie
+inside the validated file; other boundaries are restored as file slices.
+SHA-256 file matches may stop further file-hash probes; every corpus frame is
+still checked for equivalent file boundary bytes before any full-frame placement.
 
 Optional `--metadata-identity` enables the weaker, separately labeled duplicate
 inference using matching original filename, size and exact modification time.

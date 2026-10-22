@@ -15,11 +15,13 @@ from recover_png_crc_grid import validate_png
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','inventory','layout','base_mapping_directory','mapping_directory','output'):ap.add_argument(name,type=pathlib.Path)
+    ap.add_argument('--baseline-manifest',type=pathlib.Path,help='required to independently validate component-manifest file hashes')
     a=ap.parse_args();a.output.mkdir(exist_ok=False);parts=json.loads(a.layout.read_text())['disks'][0]['partitions'];base=json.loads((a.base_mapping_directory/'accepted-mappings.json').read_text());maps=json.loads((a.mapping_directory/'accepted-mappings.json').read_text());original={m['disk_offset']:m for m in base};mapped={i:{m['disk_offset']-p['_geometry']['start']:m for m in maps if m['partition']==i} for i,p in enumerate(parts)};source=a.source.open('rb')
     @functools.lru_cache(maxsize=128)
     def decode(offset,length):
         source.seek(offset);return zstandard.ZstdDecompressor().decompress(source.read(length))
     v=VHDX(a.baseline);fat=FATFS(MappedVolume(v,parts[0]['_geometry']['start'],parts[0]['_geometry']['length'],mapped[0],decode));ntfs=NTFS(MappedVolume(v,parts[2]['_geometry']['start'],parts[2]['_geometry']['length'],mapped[2],decode));ntfs.mft.fh=a.mft.open('rb');inventory={r['record']:r for r in map(json.loads,a.inventory.open())};paths={(r.get('path') or '').replace('\\','/').strip('/').casefold():n for n,r in inventory.items()};results={}
+    original_manifest_reader=None
     for m in maps:
         if m['disk_offset'] in original:
             if m!=original[m['disk_offset']]:raise ValueError('changed base mapping')
@@ -47,6 +49,11 @@ def main():
                     data=ntfs.mft.get(number).open().read()
                     if len(data)!=e['file_size'] or hashlib.new(e['algorithm'],data).hexdigest()!=e['expected_digest']:raise ValueError('original whole-file hash reconstruction differs')
                     binding=e.get('hash_source') or {}
+                    if isinstance(binding,dict) and binding.get('kind')=='original-component-manifest-file-hash':
+                        from component_manifest_hashes import OriginalManifestReader,verify_binding
+                        if a.baseline_manifest is None:raise ValueError('baseline manifest required for component hash validation')
+                        if original_manifest_reader is None:original_manifest_reader=OriginalManifestReader(a.baseline,a.mft,json.loads(a.layout.read_text()),a.baseline_manifest)
+                        verify_binding(original_manifest_reader,ntfs.mft.get(number),binding,e['algorithm'],e['expected_digest'])
                     if isinstance(binding,dict) and binding.get('kind')=='original-inf-catalog-reference-and-named-member':
                         from bind_inf_catalog_candidates import original_catalog_names
                         from windows_metadata import catalog_members
@@ -61,7 +68,7 @@ def main():
                         oid={'sha1':'1.3.14.3.2.26','sha256':'2.16.840.1.101.3.4.2.1'}[e['algorithm']]
                         members=[m for m in catalog_members(exported) if m.get('algorithm_oid')==oid and m.get('subject_oid')=='1.3.6.1.4.1.311.2.1.25' and any(x.get('tag','').casefold()=='file' and x.get('text','').casefold()==binding['catalog_member_filename'] for x in m.get('attributes',[]))]
                         if {m.get('digest') for m in members}!={e['expected_digest']}:raise ValueError('independent named catalog digest differs')
-                    results[key]=dict(partition=2,record=number,path=inventory.get(number,{}).get('path'),kind='original-file-hash',size=len(data),sha256=hashlib.sha256(data).hexdigest(),original_digest=dict(algorithm=e['algorithm'],expected=e['expected_digest']),valid=True)
+                    results[key]=dict(partition=2,record=number,path=inventory.get(number,{}).get('path'),kind='original-file-hash',size=len(data),sha256=hashlib.sha256(data).hexdigest(),original_digest=dict(algorithm=e['algorithm'],expected=e['expected_digest']),original_manifest_bindings=[binding] if isinstance(binding,dict) and binding.get('kind')=='original-component-manifest-file-hash' else [],valid=True)
             elif method=='signed-catalog-file-completion':
                 from recover_catalog_files import catalog_digest
                 number=e['record'];key=(2,str(number),'catalog')
@@ -92,6 +99,7 @@ def main():
                     crcs=original_crossing_crcs(template,mask,members,pieces)
                     if not independently_crossing(crcs) or crcs!=e['original_crossing_crcs']:raise ValueError('independent original ZIP CRC coverage differs')
                     results[key]=dict(partition=2,record=number,path=inventory.get(number,{}).get('path'),kind='original-zip-crcs',size=len(data),sha256=e['file_sha256_observed'],original_crossing_crcs=crcs,valid=True)
+    if original_manifest_reader is not None:original_manifest_reader.close()
     (a.output/'accepted-mappings.json').write_text(json.dumps(maps,indent=2));(a.output/'recovery-plan.json').write_bytes((a.mapping_directory/'recovery-plan.json').read_bytes());(a.output/'file-validation.json').write_text(json.dumps(list(results.values()),indent=2));summary=dict(valid=True,validated_files=len(results),pe_files=sum(x['kind']=='PE' for x in results.values()),png_files=sum(x['kind']=='PNG' for x in results.values()),accepted_destinations=len(maps),accepted_bytes=sum(m['length'] for m in maps),scope='Read-only source-backed overlay; saving to VHDX and post-write checks are separate.');(a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
 
 

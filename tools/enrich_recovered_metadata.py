@@ -16,14 +16,14 @@ def enrich(recovered,baseline,mft,inventory,layout):
     for side in (recovered/'files').glob('*.json'):
         info=json.loads(side.read_text());content=side.with_suffix('').read_bytes()
         if hashlib.sha256(content).hexdigest()!=info['sha256']:raise ValueError('carved file changed')
-        if info.get('file_type')=='exe':
+        if info.get('file_type')=='exe' or any(k in info.get('validation',{}) for k in ('catalog_image_digest','embedded_image_digest')):
             try:
                 import pefile
                 pe=pefile.PE(data=content,fast_load=True);pe.parse_data_directories(directories=[2]);strings={}
                 for group in getattr(pe,'FileInfo',[]):
                     for item in group:
                         for table in getattr(item,'StringTable',[]):strings.update({k.decode(errors='replace'):v.decode(errors='replace').rstrip('\0') for k,v in table.entries.items()})
-                info['embedded_pe_identity']=strings;info['original_filename']=strings.get('OriginalFilename')
+                info['embedded_pe_identity']=strings;info['original_filename']=strings.get('OriginalFilename') or info.get('original_filename')
             except Exception as _audit_error:
                 _audit_caught(_audit_error, None, expected=True, site='enrich_recovered_metadata.py:26')
                 pass
