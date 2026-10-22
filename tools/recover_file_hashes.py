@@ -26,6 +26,14 @@ def reconstruct(template,bases,pieces,assignment,contents):
     return data
 
 
+def full_frame_covered(pieces,stride):
+    cursor=0
+    for offset,logical,length in sorted(pieces):
+        if offset!=cursor or length<=0:return False
+        cursor+=length
+    return cursor==stride
+
+
 def export_candidates(output,record,target,template,bases,pieces,solutions,contents,frames,decode,origin):
     """Keep hash-matched file bytes even when their enclosing frame is ambiguous."""
     saved=[];seen=set()
@@ -137,7 +145,7 @@ def main():
                     matches={solution[i] for solution in solutions}
                     if len(matches)!=1:continue
                     sha=matches.pop();parts=b''.join(contents[sha][off:off+n] for off,logical,n in pieces[base])
-                    if manifest_bound and (sum(n for off,logical,n in pieces[base])!=stride or sorted((off,off+n) for off,logical,n in pieces[base])[0][0]!=0):
+                    if manifest_bound and not full_frame_covered(pieces[base],stride):
                         report.setdefault('manifest_file_only_boundaries',[]).append(base);continue
                     # The file hash excludes bytes outside this file. Check
                     # every corpus frame for alternatives identical inside
