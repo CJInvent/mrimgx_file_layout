@@ -3,6 +3,7 @@
 No address is inferred from carving, export adjacency or a file signature.
 Every residual frame is retained, even when a complete embedded file is carved.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,io,json,pathlib,re,sqlite3,struct,zipfile,zlib
 from contextlib import closing
 from recover_png_crc_grid import validate_png
@@ -37,7 +38,9 @@ def carved_files(data,maximum=256*1024**2):
                             dimensions=image.size;image.verify()
                         with Image.open(io.BytesIO(jpeg)) as image:image.load()
                         length=len(jpeg);suffix='jpg';validation=dict(jpeg_decoded=True,dimensions=dimensions,original_digest_available=False,structural_validation_only=True);break
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='rescue_unplaced_files.py:40')
+                        continue
             elif kind.startswith(b'\x1f\x8b'):
                 d=zlib.decompressobj(31);decoded=d.decompress(chunk,maximum+1)
                 if len(decoded)>maximum or not d.eof:raise ValueError('gzip bound/truncation')
@@ -52,7 +55,9 @@ def carved_files(data,maximum=256*1024**2):
                             if sum(x.file_size for x in archive.infolist())>maximum or any(x.flag_bits&1 for x in archive.infolist()):continue
                             if archive.testzip() is not None:continue
                             validation=dict(all_member_crcs_valid=True,members=[dict(name=x.filename,bytes=x.file_size,crc32=x.CRC,date_time=x.date_time) for x in archive.infolist()]);length=n;suffix='zip';break
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='rescue_unplaced_files.py:55')
+                        continue
             elif kind==b'MZ':
                 import pefile
                 pe=pefile.PE(data=chunk,fast_load=True);cert=pe.OPTIONAL_HEADER.DATA_DIRECTORY[4];length=max([pe.OPTIONAL_HEADER.SizeOfHeaders,cert.VirtualAddress+cert.Size]+[s.PointerToRawData+s.SizeOfRawData for s in pe.sections])
@@ -73,7 +78,9 @@ def carved_files(data,maximum=256*1024**2):
                     refs=classic_xrefs(pdf) if pdf[offset:offset+4]==b'xref' else stream_xrefs(pdf)
                     if any(not re.match(str(number).encode()+rb'\s+'+str(generation).encode()+rb'\s+obj\b',pdf[position:position+64]) for (number,generation),position in refs.items()):raise ValueError('PDF object reference mismatch')
                     if refs:length=len(pdf);suffix='pdf';validation=dict(original_xref_parsed=True)
-        except Exception:continue
+        except Exception as _audit_error:
+            _audit_caught(_audit_error, None, expected=True, site='rescue_unplaced_files.py:76')
+            continue
         if suffix and length and length<=maximum:yield start,bytes(chunk[:length]),suffix,validation
 
 

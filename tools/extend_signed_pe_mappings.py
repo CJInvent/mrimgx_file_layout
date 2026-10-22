@@ -3,6 +3,7 @@
 Each candidate fills only the missing file extent(s), preserving the original
 header, certificate and all known neighbors. No recovered executable is run.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import functools
@@ -101,7 +102,9 @@ def main():
             if lo<sec+8:continue
             prefix=hashlib.new(info['algorithm']);prefix.update(data[:cs]);prefix.update(data[cs+4:sec]);prefix.update(data[sec+8:lo])
             targets.append(dict(record=row['record'],base=base,lo=lo,hi=hi,frame_offset=off,info=info,prefix=prefix,suffix=data[hi:cert]))
-        except Exception:continue
+        except Exception as _audit_error:
+            _audit_caught(_audit_error, locals(), expected=False, site='extend_signed_pe_mappings.py:104')
+            continue
     print('signed PE single-frame targets',len(targets),'candidate frames',len(frames),flush=True)
     proposals={}
     for index,t in enumerate(targets):

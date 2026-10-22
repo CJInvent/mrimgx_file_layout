@@ -1,4 +1,5 @@
 """Discover intact catalogs and preserve signature-verified member hashes."""
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,json,mmap,pathlib,time
 from rebuild_context import Context
 from discover_duplicate_pairs import candidate_records
@@ -20,7 +21,9 @@ def main():
                 for row in catalog_members(path):
                     row.update(catalog_record=number,catalog_names=names,catalog_sha256=sha);log.write(json.dumps(row)+'\n');counts['members']+=1
                 counts['signature_hash_verified']+=1
-            except Exception as e:counts['rejected']+=1;reports.write(json.dumps(dict(record=number,names=names,error=str(e)))+'\n')
+            except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='collect_catalog_hashes.py:23')
+                counts['rejected']+=1;reports.write(json.dumps(dict(record=number,names=names,error=str(e)))+'\n')
             if time.monotonic()-updated>20:print(json.dumps(counts),flush=True);updated=time.monotonic();log.flush()
     (a.output/'summary.json').write_text(json.dumps(counts,indent=2));print(json.dumps(counts),flush=True)
 

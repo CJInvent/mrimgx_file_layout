@@ -2,6 +2,7 @@
 
 All mappings use original NTFS file runlists; package metadata is never downloaded.
 """
+from rebuild_audit import caught as _audit_caught
 import base64
 import collections
 import hashlib
@@ -58,7 +59,9 @@ def targets(fs, inventory, stride, allowed, known_read=None):
                                         logical_offset=position,filename=name,package=package,blockmap_sha256=hashlib.sha256(raw).hexdigest(),
                                         template=template,template_offset=lo-address))
                     position+=length
-        except Exception as ex:errors.append(dict(package=package,error=str(ex)))
+        except Exception as ex:
+            _audit_caught(ex, locals(), expected=False, site='appx_anchors.py:61')
+            errors.append(dict(package=package,error=str(ex)))
     stats['hash_target_groups']=len(groups);stats['hash_targets']=sum(map(len,groups.values()))
     return groups,dict(stats),errors
 

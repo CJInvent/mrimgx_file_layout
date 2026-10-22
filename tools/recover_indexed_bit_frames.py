@@ -3,6 +3,7 @@
 Every repaired frame is an external derivative. Only unique native repairs that
 decode to the original indexed length/MD5 produce supplemental placement requests.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,hashlib,json,pathlib,sqlite3,subprocess
 import zstandard
 
@@ -31,7 +32,9 @@ def main():
             try:
                 decoded=zstandard.ZstdDecompressor().decompress(raw,max_output_size=4*1024**2)
                 observed=hashlib.md5(decoded).digest();report.update(original_decoding_succeeded=True,observed_decoded_bytes=len(decoded),observed_decoded_md5=observed.hex(),index_digest_differing_bits=sum((x^y).bit_count() for x,y in zip(md5,observed)),index_digest_differing_bytes=sum(x!=y for x,y in zip(md5,observed)))
-            except Exception as e:report.update(original_decoding_succeeded=False,decode_error=str(e))
+            except Exception as e:
+                _audit_caught(e, None, expected=True, site='recover_indexed_bit_frames.py:34')
+                report.update(original_decoding_succeeded=False,decode_error=str(e))
             if a.audit_only:report['status']='audit-only-no-native-test';continue
             if a.reuse_negative_attempts:
                 old=a.reuse_negative_attempts/f'{partition}-{block}.log';old_input=a.reuse_negative_attempts/f'{partition}-{block}-original.bin'
@@ -39,14 +42,18 @@ def main():
                     cached=json.loads(old.read_text())
                     if cached.get('status')=='no-unique-single-bit-repair' and cached.get('original_decoded_md5')==md5.hex() and cached.get('decoded_bytes')==length and cached.get('matches')==0 and cached.get('tested_bytes')==len(raw) and old_input.read_bytes()==raw:
                         report.update(status='no-unique-single-bit-repair',reused_negative_log=str(old.resolve()),reused_log_sha256=hashlib.sha256(old.read_bytes()).hexdigest());print(json.dumps(dict(event='reused-complete-negative-test',**report)),flush=True);continue
-                except (OSError,ValueError):pass
+                except (OSError,ValueError) as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_indexed_bit_frames.py:42')
+                    pass
             input_path=a.output/f'{partition}-{block}-original.bin';fixed=a.output/f'{partition}-{block}-repaired.bin'
             with input_path.open('xb') as out:out.write(raw)
             print(json.dumps(dict(event='bit-search-begin',**report)),flush=True)
             try:
                 with (a.output/f'{partition}-{block}.progress.log').open('x') as progress:
                     result=subprocess.run([str(a.repair_exe),str(input_path),str(fixed),md5.hex(),str(length)],stdout=subprocess.PIPE,stderr=progress,text=True)
-            except OSError as e:report['error']=str(e);errors.append(dict(row=report,error=str(e)));continue
+            except OSError as e:
+                _audit_caught(e, locals(), expected=False, site='recover_indexed_bit_frames.py:49')
+                report['error']=str(e);errors.append(dict(row=report,error=str(e)));continue
             (a.output/f'{partition}-{block}.log').write_text(result.stdout);report['returncode']=result.returncode
             if result.returncode==2:report['status']='no-unique-single-bit-repair';continue
             if result.returncode:errors.append(dict(row=report,error='native failure; see progress log'));continue

@@ -4,6 +4,7 @@ Source proximity nominates bounded candidate combinations only. Acceptance
 requires the complete embedded cryptographic image digest plus PE name/language
 identity. Conflicting frame contents at one address remain unresolved.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,functools,hashlib,itertools,json,math,pathlib,sqlite3,struct
 import pefile,zstandard
 from dissect.fat import FATFS
@@ -79,7 +80,9 @@ def main():
                     if pathlib.PureWindowsPath(path).suffix.casefold() not in ('.dll','.exe','.sys','.mui','.efi','.ocx','.cpl','.scr','.winmd','.ax'):continue
                     try:
                         record=ntfs.mft.get(row['record']);file_extents(record,record.size());yield NtfsEntry(record,path)
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='recover_fat_multiframe_pe.py:82')
+                        continue
         root=Root()
     else:raise ValueError('supports FAT partition0 and cached NTFS partition2')
     db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);frames=collections.defaultdict(list);contents={}
@@ -122,7 +125,9 @@ def main():
                     if not cert.Size or cert.VirtualAddress+cert.Size!=child.size:continue
                     cert_base=(physical_at(cert.VirtualAddress)-data_start)//stride*stride+data_start
                     cert_options=ordered if cert_base in bases and cert_base not in fixed else [fixed.get(cert_base)]
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_fat_multiframe_pe.py:125')
+                    continue
                 for cert_sha in cert_options:
                     data=initial[:];fixed2=dict(fixed)
                     if cert_sha is not None:patch(data,contents[cert_sha],patches[cert_base]);fixed2[cert_base]=cert_sha
@@ -130,7 +135,9 @@ def main():
                     n,revision,typ=struct.unpack_from('<IHH',data,cert.VirtualAddress)
                     if typ!=2 or revision!=0x200 or not 8<=n<=cert.Size:continue
                     try:info=image_digest(bytes(data),verify=False)
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='recover_fat_multiframe_pe.py:133')
+                        continue
                     report['nominations'].append(dict(fixed={str(b):frames[s][0][0] for b,s in fixed2.items()},digest=info['digest']))
                     remaining=[base for base in bases if base not in fixed2];pools=[]
                     remaining.sort(key=lambda b:patches[b][0][0]);regions=[patches[b][0] for b in remaining]
@@ -167,7 +174,9 @@ def main():
                             if digest(candidate,info)!=info['digest']:continue
                             report['digest_matches']+=1
                             try:identity=pe_identity(bytes(candidate),full)
-                            except Exception as e:report['identity_rejections'].append(str(e));continue
+                            except Exception as e:
+                                _audit_caught(e, locals(), expected=False, site='recover_fat_multiframe_pe.py:170')
+                                report['identity_rejections'].append(str(e));continue
                             solution=dict(fixed2);solution.update(zip(remaining,assignment));solutions.append(solution)
                             evidence=dict(method=('fat' if pi==0 else 'ntfs')+'-multiframe-complete-embedded-pe-image-digest',file_path=full,image_digest=dict(info,matches=True),identity=identity,missing_frames=len(bases),source_proximity_only_nominated=True)
                             for base,sha in solution.items():pending[base].append((frames[sha],evidence))

@@ -4,6 +4,7 @@ A single CRC32 is insufficient: require two independently crossing stream CRCs,
 or a complete nested CRC/hash validation or a surviving labeled payload digest.
 All header/key/EOF addresses come from the original file and its MFT runlist.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,base64,collections,hashlib,json,pathlib,re,sqlite3,struct,zlib
 from rescue_unplaced_files import exclusive_write
 from rebuild_context import Context
@@ -53,7 +54,9 @@ def extra_validation(data,info,original,known):
             try:
                 raw=base64.b64decode(value,validate=True)
                 if len(raw) in (16,20,32):digests.append(({16:'md5',20:'sha1',32:'sha256'}[len(raw)],raw.hex()))
-            except Exception:pass
+            except Exception as _audit_error:
+                _audit_caught(_audit_error, None, expected=True, site='recover_chromium_streams.py:56')
+                pass
     for stream in info['streams']:
         lo,hi=stream['start'],stream['end']
         if known(lo,hi):continue
@@ -98,7 +101,9 @@ def main():
             for sha in contents:
                 data=reconstruct(template,[base],pieces,[sha],contents)
                 try:validate(data,info)
-                except ValueError:continue
+                except ValueError as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_chromium_streams.py:101')
+                    continue
                 crc_matches+=1;crc_candidates.append(dict(sha256=sha,frames=[f[0] for f in frames[sha]],stream_prefixes={str(s['index']):data[s['start']:min(s['end'],s['start']+96)].hex() for s in info['streams']}));extra=extra_validation(data,info,template,known)
                 if crossings>=2 or extra:solutions.append((sha,extra,hashlib.sha256(data).hexdigest()))
                 else:candidate_files.append((sha,bytes(data)))
@@ -119,7 +124,9 @@ def main():
                     exclusive_write(target,data);proof=dict(schema_version=1,kind='reconstructed-file-candidate',file_type='chromium-cache',placement_status='candidate-only',vhdx_insertion_authorized=False,original_digest_available=False,sha256=digest,bytes=len(data),original_filename=name,possible_locations=[dict(record=row['record'],path=row.get('path'),partition=2,partition_disk_offset=ctx.origin,cluster_bytes=4096,physical_cluster_runs=list(rec.dataruns()),placement_confirmed=False)],validation=dict(original_stream_crcs=True,key_filename_sha1=True,stream_layout=info,crossing_original_crcs=crossings,independent_extra_validation=False),provenance=[dict(frame=f[0],source_offset=f[1],encoded_bytes=f[2],decoded_frame_sha256=sha) for f in frames[sha]],alternative_crc_candidates=crc_matches,note='A single original CRC32 nominates this complete file. Additional independent validation is still needed before inserting its frame into VHDX.')
                     exclusive_write(target.with_suffix(target.suffix+'.json'),json.dumps(proof,indent=2))
             print(json.dumps(report),flush=True)
-        except Exception:continue
+        except Exception as _audit_error:
+            _audit_caught(_audit_error, locals(), expected=False, site='recover_chromium_streams.py:122')
+            continue
     conflicts=[]
     for base,items in sorted(pending.items()):
         if len({sha for sha,e in items})!=1:conflicts.append(base);continue

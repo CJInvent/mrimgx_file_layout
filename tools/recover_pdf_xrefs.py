@@ -3,6 +3,7 @@
 Requires two distinct object headers agreeing on one frame base. Original classic
 tables or xref streams require original startxref/EOF anchors; no rebuilt xref.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -114,7 +115,9 @@ def main():
                 for (number,generation),offset in entries.items():
                     for lo,hi,physical in runs:
                         if lo<=offset<hi:targets[(number,generation)].append(dict(record=row['record'],address=physical+offset-lo,file_offset=offset))
-        except Exception as ex:errors.append(dict(record=row['record'],error=str(ex)))
+        except Exception as ex:
+            _audit_caught(ex, locals(), expected=False, site='recover_pdf_xrefs.py:117')
+            errors.append(dict(record=row['record'],error=str(ex)))
     db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);used={fid for m in accepted for fid in m['frames']};pending=collections.defaultdict(list)
     with (a.evidence/'orphan-decoded.bin').open('rb') as corpus,(a.output/'pdf-evidence.jsonl').open('x') as log:
         for row in db.execute('SELECT id,source_offset,stored_length,export_offset,decoded_length,md5,sha256 FROM frames'):

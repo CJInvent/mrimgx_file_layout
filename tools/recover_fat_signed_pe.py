@@ -4,6 +4,7 @@ Keeps all independently known file bytes, follows original FAT extents and
 checks PE OriginalFilename plus language resources where the header was lost.
 Never executes code or asserts certificate trust.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,functools,hashlib,json,locale,pathlib,re,sqlite3
 import pefile,zstandard
 from dissect.fat import FATFS
@@ -28,7 +29,9 @@ def pe_identity(data,path):
                 value=table.entries.get(b'OriginalFilename')
                 if value:names.add(value.decode('utf-8',errors='strict').rstrip('\0').casefold())
                 try:languages.add(int(table.LangID[:4],16))
-                except Exception:pass
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, locals(), expected=False, site='recover_fat_signed_pe.py:31')
+                    pass
     filename=path.split('/')[-1].casefold();variants=name_variants(filename)
     if not names&variants:raise ValueError('PE OriginalFilename differs from FAT entry: '+repr(sorted(names)))
     parent=path.split('/')[-2].casefold()
@@ -79,7 +82,9 @@ def main():
                 for lo,hi,offset in patches:candidate[lo:hi]=data[offset:offset+hi-lo]
                 try:
                     info=image_digest(bytes(candidate));identity=pe_identity(bytes(candidate),full);matches.append((sha,info,identity))
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_fat_signed_pe.py:82')
+                    continue
             report=dict(path=full,base=base,matched_hashes=[s for s,i,d in matches]);reports.append(report)
             if len(matches)==1:
                 sha,info,identity=matches[0];pending[base].append((frames[sha],dict(method='fat-chain-complete-embedded-pe-image-digest',fat_path=full,image_digest=info,identity=identity,patches=[dict(logical_start=lo,logical_end=hi,decoded_offset=o) for lo,hi,o in patches])))

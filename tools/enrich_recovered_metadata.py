@@ -3,6 +3,7 @@
 Size/name matches are metadata leads only, never authority to insert a file in
 the VHDX. The carved bytes, baseline and original MFT stay unchanged.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,json,mmap,pathlib
 from discover_duplicate_pairs import candidate_records
 from safe_vhdx import VHDX
@@ -23,7 +24,9 @@ def enrich(recovered,baseline,mft,inventory,layout):
                     for item in group:
                         for table in getattr(item,'StringTable',[]):strings.update({k.decode(errors='replace'):v.decode(errors='replace').rstrip('\0') for k,v in table.entries.items()})
                 info['embedded_pe_identity']=strings;info['original_filename']=strings.get('OriginalFilename')
-            except Exception:pass
+            except Exception as _audit_error:
+                _audit_caught(_audit_error, None, expected=True, site='enrich_recovered_metadata.py:26')
+                pass
         sizes.add(info['bytes']);files.append((side,info))
     bysize=collections.defaultdict(list);p=layout['disks'][0]['partitions'][2];volume=VHDX(baseline);fs=NTFS(RangeStream(volume,p['_geometry']['start'],p['_geometry']['length']));cache=mft.open('rb');fs.mft.fh=cache
     try:
@@ -34,9 +37,13 @@ def enrich(recovered,baseline,mft,inventory,layout):
                     record=fs.mft.get(number);names=record.filenames(ignore_dos=True)
                     if not names or record.size()!=size:continue
                     try:path=record.full_path()
-                    except Exception:path=paths.get(number)
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, locals(), expected=False, site='enrich_recovered_metadata.py:37')
+                        path=paths.get(number)
                     bysize[size].append(dict(record=number,sequence=record.header.SequenceNumber,names=names,path=path,size=size,physical_cluster_runs=list(record.dataruns()),partition=2,cluster_bytes=fs.cluster_size,partition_disk_offset=p['_geometry']['start']))
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, locals(), expected=False, site='enrich_recovered_metadata.py:39')
+                    continue
         count=0
         for side,info in files:
             candidates=[];original=(info.get('original_filename') or '').casefold();suffix=info['file_type']

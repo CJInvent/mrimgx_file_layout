@@ -3,6 +3,7 @@
 Does not execute recovered code or claim certificate trust. The Authenticode
 digest checks image content against the digest embedded in its signed message.
 """
+from rebuild_audit import caught as _audit_caught
 import collections
 import hashlib
 import struct
@@ -87,9 +88,13 @@ def candidates(data, fs, names, stride, base_allowed):
                                 logical+=count*4096
                             evidence['image_digest']=image_digest(bytes(filedata))
                         matches.append((base,evidence))
-                    except Exception as ex:errors.append(dict(page_offset=off,record=number,error=str(ex)))
+                    except Exception as ex:
+                        _audit_caught(ex, None, expected=True, site='pe_anchors.py:90')
+                        errors.append(dict(page_offset=off,record=number,error=str(ex)))
             if matches:pages.append(matches)
-        except Exception as ex:errors.append(dict(page_offset=off,error=str(ex)))
+        except Exception as ex:
+            _audit_caught(ex, None, expected=True, site='pe_anchors.py:92')
+            errors.append(dict(page_offset=off,error=str(ex)))
     if not pages:return [],errors
     bases=set(b for b,_ in pages[0])
     for matches in pages[1:]:bases.intersection_update(b for b,_ in matches)

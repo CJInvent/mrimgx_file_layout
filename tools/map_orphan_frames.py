@@ -4,6 +4,7 @@ Exact and partial index hashes, surviving index addresses and NTFS directory
 runlists are independent evidence channels. All non-exact results remain
 reconstructed, and conflicting bytes at a destination are rejected.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -144,7 +145,9 @@ def main():
                     if block>=plan['partitions'][pi]['count'] or base+f['decoded_length']>p['_geometry']['length']:raise ValueError('partition bounds')
                     evidence=dict(partition=pi,block=block,disk_offset=dest,parents=sorted(parents),vcn=vcn,page_offset=roff)
                     report['mappings'].append(evidence);page_maps.append((pi,block,dest,stride,evidence))
-                except Exception as ex: report.setdefault('rejections',[]).append(dict(partition=pi,error=str(ex)))
+                except Exception as ex:
+                    _audit_caught(ex, None, expected=True, site='map_orphan_frames.py:147')
+                    report.setdefault('rejections',[]).append(dict(partition=pi,error=str(ex)))
             for pi,b,d,l,evidence in page_maps:
                 propose(f,pi,False,b,d,l,'ntfs-indx-runlist',evidence)
             recordslog.write(json.dumps(report)+'\n')
@@ -190,7 +193,9 @@ def main():
                                 base=address-off
                                 if base<0 or base%stride or size<24+klen:continue
                                 possible.append((base,record,stem+suffix,sequence))
-                            except Exception:continue
+                            except Exception as _audit_error:
+                                _audit_caught(_audit_error, None, expected=True, site='map_orphan_frames.py:193')
+                                continue
                     bases={a[0] for a in possible}
                     if len(bases)==1:anchors.extend(possible)
                 bases={a[0] for a in anchors}

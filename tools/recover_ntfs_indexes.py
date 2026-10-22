@@ -5,6 +5,7 @@ needed. Output: a new plan; neither source bytes nor the input plan are changed.
 All resulting overrides remain explicitly reconstructed/unverified.
 Requires zstandard and dissect.ntfs. Do not infer mappings from frame order.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import functools
 import hashlib
@@ -166,7 +167,8 @@ def recover(source, plan, partition, scan_start, scan_end):
                                       decoded_md5=digest, reason=(
                         f'Carved INDX: {len(mappings)} fixup-valid pages mapped through verified MFT '
                         f'parent runlists {sorted(set(parents))}; original index digest unavailable.'))
-                except (ValueError, EOFError, OSError, struct.error, zstandard.ZstdError):
+                except (ValueError, EOFError, OSError, struct.error, zstandard.ZstdError) as _audit_error:
+                    _audit_caught(_audit_error, locals(), expected=False, site='recover_ntfs_indexes.py:169')
                     continue
             print(f'scanned={pos + window} reconstructed={len(found)} ambiguous={len(ambiguous)}', flush=True)
     plan['partitions'][partition].setdefault('overrides', {}).update(found)

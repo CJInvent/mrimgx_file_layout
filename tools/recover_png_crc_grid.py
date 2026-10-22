@@ -4,6 +4,7 @@ Proposals stay local until every missing file byte is resolved, all PNG chunk
 CRCs validate, and the zlib/Adler stream has the exact expected scanline size.
 No source-order inference and no executable content is evaluated.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,functools,hashlib,json,math,pathlib,sqlite3,struct,zlib
 import zstandard
 from safe_vhdx import VHDX
@@ -99,7 +100,9 @@ def main():
                 try:
                     typ,n,end=chunk(data,h)
                     if n>=4096:anchors[n].append((f[6],h))
-                except Exception:pass
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_png_crc_grid.py:102')
+                    pass
     proposals=collections.defaultdict(list);reports=[]
     for row in map(json.loads,a.inventory.open()):
         path=row.get('path') or ''
@@ -136,7 +139,8 @@ def main():
                             pos=first+number*step
                             if pos<first or pos>=size:continue
                             try:typ,length,end=chunk(candidate,pos)
-                            except Exception:
+                            except Exception as _audit_error:
+                                _audit_caught(_audit_error, None, expected=True, site='recover_png_crc_grid.py:139')
                                 if lo<=pos and pos+step<=hi:bad=True
                                 continue
                             if typ!=b'IDAT' or end<=lo or pos>=hi:continue
@@ -172,7 +176,9 @@ def main():
                                     if typ!=b'IDAT':break
                                     count+=1;end=nextend
                                 if count:matches.append(sha)
-                            except Exception:continue
+                            except Exception as _audit_error:
+                                _audit_caught(_audit_error, None, expected=True, site='recover_png_crc_grid.py:175')
+                                continue
                         if len(matches)==1:
                             sha=matches[0];buffer[lo:hi]=data_by_hash[sha][lo-logical:hi-logical];known[lo:hi]=b'\1'*(hi-lo);local[base]=sha;progress=True;break
             remaining=missing-local.keys()
@@ -181,7 +187,9 @@ def main():
                 for sha,data in data_by_hash.items():
                     candidate=buffer[:];candidate[lo:hi]=data[lo-logical:hi-logical]
                     try:validate_png(bytes(candidate));matches.append(sha)
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='recover_png_crc_grid.py:184')
+                        continue
                 if len(matches)==1:
                     sha=matches[0];buffer[lo:hi]=data_by_hash[sha][lo-logical:hi-logical];known[lo:hi]=b'\1'*(hi-lo);local[base]=sha
             report.update(missing_frames=len(missing),provisional_frames=len(local))
@@ -189,7 +197,9 @@ def main():
             if known.count(0):continue
             validation=validate_png(bytes(buffer));report['validation']=validation;whole=hashlib.sha256(buffer).hexdigest()
             for base,sha in local.items():proposals[base].append((frames[sha],dict(method='png-idat-grid-cross-crc-complete-zlib-validation',record=row['record'],file_sha256_observed=whole,validation=validation,first_idat=first,regular_idat_payload=n)))
-        except Exception as e:report['rejected']=str(e)
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='recover_png_crc_grid.py:192')
+            report['rejected']=str(e)
     conflicts=[]
     for base,items in sorted(proposals.items()):
         if len({fs[0][6] for fs,e in items})!=1:conflicts.append(base);continue

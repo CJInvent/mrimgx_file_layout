@@ -1,4 +1,5 @@
 """Discover NTFS MFT records and affected files from a read-only baseline."""
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,json,pathlib,time
 from safe_vhdx import VHDX
 from dissect.ntfs import NTFS
@@ -28,7 +29,9 @@ def prepare(baseline,manifest,layout,output,partition=2):
         if record.size('',bitmap_type)>2*1024**2:raise ValueError('excessive MFT bitmap')
         allocated=record.open('',bitmap_type).read()
         if len(allocated)*8<mftsize//size:raise ValueError('short MFT allocation bitmap')
-    except Exception:allocated=None
+    except Exception as _audit_error:
+        _audit_caught(_audit_error, locals(), expected=False, site='prepare_rebuild.py:31')
+        allocated=None
     with (output/'affected-files.jsonl').open('x') as out:
         for number in range(mftsize//size):
             try:
@@ -47,9 +50,12 @@ def prepare(baseline,manifest,layout,output,partition=2):
                                 a,b,status=ranges[k];hits.append(dict(stream=name,type=int(typ),disk_offset=origin+max(lo,a),length=min(hi,b)-max(lo,a),status=status));k+=1
                 if hits:
                     try:path=record.full_path()
-                    except Exception:path=record.filename
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, locals(), expected=False, site='prepare_rebuild.py:50')
+                        path=record.filename
                     out.write(json.dumps(dict(record=number,path=path,ranges=hits))+'\n');counts['affected_records']+=1
             except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='prepare_rebuild.py:52')
                 counts['unreadable_records']+=1
                 if counts['unreadable_records']<=10:print('MFT',number,str(e),flush=True)
             if time.monotonic()-last>10:print(json.dumps(dict(record=number,counts=counts)),flush=True);last=time.monotonic();out.flush()

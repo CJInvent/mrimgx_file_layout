@@ -4,6 +4,7 @@ Requires equal FAT copies, a surviving directory entry and complete FAT chain,
 same-name/size NTFS donor, mutually known bytes and unique exact orphan content.
 No executable is run and no directory/FAT metadata is synthesized.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -112,7 +113,9 @@ def main():
                     matches=[sha for sha,data in data_by_hash.items() if all(data[offset:offset+length]==part for (offset,logical,length),part in zip(pieces,expected))]
                     if len(matches)!=1:continue
                     sha=matches[0];pending[base].append((frames[sha],dict(method='fat-chain-ntfs-duplicate-exact-slices',fat_path=t['path'],donor=number,donor_sha256=report['donor_sha256'],compared_surviving_bytes=compared,matched_candidate_bytes=sum(map(len,expected)),pieces=[dict(decoded_offset=o,logical_offset=l,length=n) for o,l,n in pieces],fat_copies_sha256=hashlib.sha256(copies[0]).hexdigest())));report['candidates']+=1
-            except Exception as e:report['rejected']=str(e)
+            except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='recover_fat_duplicates.py:115')
+                report['rejected']=str(e)
     conflicts=[]
     for base,items in sorted(pending.items()):
         if len({fs[0][6] for fs,e in items})!=1:conflicts.append(base);continue

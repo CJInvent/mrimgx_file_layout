@@ -1,4 +1,5 @@
 """Retry undecoded residual candidates and inspect raw metadata for NTFS records."""
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import hashlib
@@ -37,11 +38,14 @@ def main():
                             if sum(map(len,chunks))>4*1024**2:raise ValueError('partial output limit')
                             if decoder.eof:break
                         except Exception as ex:
+                            _audit_caught(ex, None, expected=True, site='inspect_residual_failures.py:39')
                             report.update(error=str(ex),error_input_offset=position+start);break
                     decoded=b''.join(chunks);report.update(decoded_prefix_bytes=len(decoded),eof=decoder.eof)
                     if decoded:
                         report.update(export_offset=partial.tell(),sha256=hashlib.sha256(decoded).hexdigest());partial.write(decoded)
-                except Exception as ex:report['header_error']=str(ex)
+                except Exception as ex:
+                    _audit_caught(ex, None, expected=True, site='inspect_residual_failures.py:44')
+                    report['header_error']=str(ex)
                 results.append(report)
             for signature,length in ((b'FILE',1024),(b'INDX',4096)):
                 offset=0
@@ -50,7 +54,9 @@ def main():
                     if offset<0:break
                     if len(data)-offset>=length:
                         try:apply_fixup(data[offset:offset+length]);raw_records.append(dict(source_offset=item['source_offset']+offset,signature=signature.decode(),length=length,fixup_valid=True))
-                        except Exception:pass
+                        except Exception as _audit_error:
+                            _audit_caught(_audit_error, None, expected=True, site='inspect_residual_failures.py:53')
+                            pass
                     offset+=4
     metadata=(a.evidence/'source-metadata-tail.bin').read_bytes();start=json.loads((a.evidence/'coverage-summary.json').read_text())['data_region_end']
     for signature,length in ((b'FILE',1024),(b'INDX',4096)):
@@ -60,7 +66,9 @@ def main():
             if offset<0:break
             if len(metadata)-offset>=length:
                 try:apply_fixup(metadata[offset:offset+length]);raw_records.append(dict(source_offset=start+offset,signature=signature.decode(),length=length,fixup_valid=True))
-                except Exception:pass
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='inspect_residual_failures.py:63')
+                    pass
             offset+=4
     result=dict(retried_candidates=results,raw_fixup_valid_records=raw_records,nested_magic_hits_skipped=nested,scope='Bytewise raw residual and metadata search, plus bounded incremental decompression of candidates outside all decoded frame intervals. Nested compressed signatures are not independent orphan frames.')
     (a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

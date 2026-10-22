@@ -4,6 +4,7 @@ Requires a completed recovery manifest and its fingerprinted plan. 'Unaccounted'
 means not incorporated into that export, not never physically read or hashed.
 The source and VHDX are read-only. Output is a new forensic evidence directory.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import collections
 import hashlib
@@ -176,12 +177,15 @@ def scan(source, out, db, gaps, metadata):
                                     number=struct.unpack_from('<I',fixed,44)[0]
                                     details=dict(sequence=struct.unpack_from('<H',fixed,16)[0],flags=struct.unpack_from('<H',fixed,22)[0],base_reference=struct.unpack_from('<Q',fixed,32)[0])
                                 else:details=dict(vcn=struct.unpack_from('<Q',fixed,16)[0])
-                            except Exception as ex:details={'error':str(ex)}
+                            except Exception as ex:
+                                _audit_caught(ex, None, expected=True, site='forensic_residuals.py:179')
+                                details={'error':str(ex)}
                             record_offset=records.tell();records.write(rec)
                             db.execute('INSERT INTO records VALUES (?,?,?,?,?,?,?,?)',(frame_id,roff,sig.decode(),record_offset,length,int(valid),number,json.dumps(details)))
                             stats[sig.decode()+('_fixup_valid' if valid else '_fixup_failed')]+=1
                         off=hit+n;frame_end=scan_pos+off
                     except (zstandard.ZstdError,ValueError,OverflowError) as ex:
+                        _audit_caught(ex, None, expected=True, site='forensic_residuals.py:184')
                         stats['decode_failures']+=1
                         failures.write(json.dumps(dict(source_offset=scan_pos+hit,range_start=start,range_end=end,error=str(ex)))+'\n')
                 scan_pos+=window

@@ -4,12 +4,15 @@ Never launches a recovered program or writes to the source/baseline/evidence.
 Native strict conversion remains the default. All stages use the same reusable
 methods as interactive forensic work, with machine-readable logs and failures.
 """
-import argparse,hashlib,json,os,pathlib,shutil,subprocess,sys,time
+from rebuild_audit import caught as _audit_caught
+import argparse,hashlib,json,os,pathlib,shutil,subprocess,sys,time,traceback,contextlib
 from make_recovery_plan import make_plan
 from forensic_residuals import root_layout
+from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
 DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes'
+ACTIVE_RUNNER=None
 
 
 def corrupted(manifest):
@@ -22,16 +25,37 @@ def corrupted(manifest):
 
 
 class Runner:
-    def __init__(self,output):self.output=output;self.events=[];self.serial=0
-    def call(self,tool,args,output=None,allowed=(0,)):
-        self.serial+=1;name=f'{self.serial:04d}-{tool}';log=self.output/'logs'/(name+'.log');command=[sys.executable,str(TOOLS/(tool+'.py'))]+[str(x) for x in args];began=time.monotonic();print(json.dumps(dict(stage=name,event='begin',log=str(log))),flush=True)
-        with log.open('x') as stream:code=subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT).returncode
-        event=dict(stage=name,command=command,exit_code=code,seconds=time.monotonic()-began,log=str(log.resolve()),success=code in allowed);self.events.append(event);(self.output/'stages.json').write_text(json.dumps(self.events,indent=2));print(json.dumps(event),flush=True)
+    def __init__(self,output,arguments=None):self.output=output;self.events=[];self.serial=0;self.audit=Audit(output,arguments or {})
+    def process(self,label,command,allowed=(0,)):
+        self.serial+=1;name=f'{self.serial:04d}-{label}';log=self.output/'logs'/(name+'.log');began=time.monotonic();print(json.dumps(dict(stage=name,event='begin',log=str(log))),flush=True);emit('stage-start',label,context=dict(stage=name,command=command,log=log))
+        try:
+            with log.open('x') as stream:code=subprocess.run([str(x) for x in command],stdout=stream,stderr=subprocess.STDOUT,env=self.audit.child_environment(name)).returncode
+        except BaseException as e:
+            record_exception(e,dict(stage=name,command=command,log=log),category='stage-launch-error');event=dict(stage=name,command=[str(x) for x in command],exit_code=None,seconds=time.monotonic()-began,log=str(log.resolve()),success=False,launch_error=str(e));self.events.append(event);(self.output/'stages.json').write_text(json.dumps(self.events,indent=2));raise
+        event=dict(stage=name,command=[str(x) for x in command],exit_code=code,seconds=time.monotonic()-began,log=str(log.resolve()),success=code in allowed);self.events.append(event);(self.output/'stages.json').write_text(json.dumps(self.events,indent=2));emit('stage-end',label,severity='info' if code in allowed else 'error',context=event);print(json.dumps(event),flush=True)
+        with log.open(encoding='utf-8',errors='replace') as stream:
+            for line in stream:
+                try:row=json.loads(line)
+                except (ValueError,TypeError):continue
+                if not isinstance(row,dict):continue
+                for key in ('conflicts','conflicting_bases','budget_reached','budget_exhausted','skipped'):
+                    if row.get(key):emit('mapping-conflict' if 'conflict' in key else 'search-limit' if 'budget' in key else 'search-skip',key,severity='warning' if key!='skipped' else 'info',context=dict(stage=name,details=row))
         if code not in allowed:raise RuntimeError(f'{name} failed ({code}); see {log}')
+        return event
+    def action(self,label,function):
+        self.serial+=1;name=f'{self.serial:04d}-{label}';log=self.output/'logs'/(name+'.log');began=time.monotonic();print(json.dumps(dict(stage=name,event='begin',log=str(log))),flush=True);emit('stage-start',label,context=dict(stage=name,log=log));code=0
+        try:
+            with log.open('x') as stream,contextlib.redirect_stdout(stream),contextlib.redirect_stderr(stream):return function()
+        except BaseException as e:code=1;record_exception(e,dict(stage=name,log=log),category='stage-action-error');raise
+        finally:
+            event=dict(stage=name,exit_code=code,seconds=time.monotonic()-began,log=str(log.resolve()),success=not code);self.events.append(event);(self.output/'stages.json').write_text(json.dumps(self.events,indent=2));emit('stage-end',label,severity='error' if code else 'info',context=event);print(json.dumps(event),flush=True)
+    def call(self,tool,args,output=None,allowed=(0,)):
+        command=[sys.executable,str(TOOLS/(tool+'.py'))]+[str(x) for x in args];self.process(tool,command,allowed)
         return output
 
 
 def main():
+    global ACTIVE_RUNNER
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('source',type=pathlib.Path);ap.add_argument('--plan',type=pathlib.Path,help='optional existing fingerprinted plan; otherwise discover corroborated index arrays and boot frames')
     ap.add_argument('--output',type=pathlib.Path,required=True);ap.add_argument('--native',type=pathlib.Path);ap.add_argument('--baseline',type=pathlib.Path);ap.add_argument('--manifest',type=pathlib.Path);ap.add_argument('--evidence',type=pathlib.Path);ap.add_argument('--mft',type=pathlib.Path);ap.add_argument('--inventory',type=pathlib.Path);ap.add_argument('--mapping-directory',type=pathlib.Path)
@@ -48,22 +72,24 @@ def main():
     if a.rounds<0 or a.per_file_budget<1:ap.error('invalid search limits')
     requested=set(a.stages.split(','));unknown=requested-set(DEFAULT_STAGES.split(','))
     if unknown:ap.error('unknown stages: '+','.join(sorted(unknown)))
+    a.output.mkdir(exist_ok=False);(a.output/'logs').mkdir();runner=Runner(a.output,vars(a));ACTIVE_RUNNER=runner
     if a.plan is None:
         from discover_rebuild_plan import discover,bootstrap_boot
-        a.output.mkdir(exist_ok=False);(a.output/'logs').mkdir();plan,discovery=discover(a.source);plan,discovery['boot_recovery']=bootstrap_boot(a.source,plan);a.plan=a.output/'discovered-plan.json';a.plan.open('x').write(json.dumps(plan,indent=2));(a.output/'plan-discovery.json').open('x').write(json.dumps(discovery,indent=2))
+        plan,discovery=runner.action('discover-index-arrays',lambda:discover(a.source));plan,discovery['boot_recovery']=runner.action('discover-ntfs-boot',lambda:bootstrap_boot(a.source,plan));a.plan=a.output/'discovered-plan.json';a.plan.open('x').write(json.dumps(plan,indent=2));(a.output/'plan-discovery.json').open('x').write(json.dumps(discovery,indent=2))
     else:
-        plan=json.loads(a.plan.read_text());a.output.mkdir(exist_ok=False);(a.output/'logs').mkdir()
+        plan=json.loads(a.plan.read_text())
     if make_plan(a.source,plan)!=plan:raise ValueError('source/plan fingerprint mismatch')
     layout=root_layout(a.source);parts=layout['disks'][0]['partitions']
     if len(parts)<3 or parts[2]['_header']['block_size']!=143360:raise ValueError('current mapping suite requires Windows NTFS at partition 2 with 143360-byte frames; unsupported geometry is not guessed')
-    protected=[p for p in (a.source,a.plan,a.baseline,a.manifest,a.mft,a.inventory) if p];stats={str(p.resolve()):(p.stat().st_size,p.stat().st_mtime_ns) for p in protected};runner=Runner(a.output)
+    protected=[p for p in (a.source,a.plan,a.baseline,a.manifest,a.mft,a.inventory) if p];stats={str(p.resolve()):(p.stat().st_size,p.stat().st_mtime_ns) for p in protected}
     baseline=a.baseline;manifest=a.manifest
     if baseline is None:
         if not a.native:ap.error('--native required to create a baseline')
         baseline=a.output/'baseline.vhdx';manifest=a.output/'baseline-manifest.jsonl'
         command=[str(a.native), '--recover-plan',str(a.source),str(a.plan),str(baseline),str(manifest),'--direct-vhdx',str(a.qemu_img)]
-        with (a.output/'logs/baseline.log').open('x') as log:code=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT).returncode
-        if code not in (0,2):raise RuntimeError('baseline conversion failed; preserved output is incomplete')
+        runner.process('baseline-conversion',command,allowed=(0,2))
+    for row in map(json.loads,manifest.open()):
+        if row.get('operation')=='range' and row.get('status') in ('unrecoverable','unknown-zero-index','reconstructed-unverified'):emit('input-corruption',row.get('error') or row['status'],severity='warning',context=row)
     if not corrupted(manifest):
         (a.output/'summary.json').write_text(json.dumps(dict(corruption_detected=False,rebuild_performed=False,baseline=str(baseline.resolve())),indent=2));return 0
     evidence=a.evidence
@@ -73,7 +99,9 @@ def main():
     if 'residual-audit' in requested:
         audit_output=a.output/'residual-audit'
         try:runner.call('inspect_residual_failures',[evidence,audit_output])
-        except Exception as e:errors.append(dict(tool='residual-audit',error=str(e)))
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='rebuild.py:94')
+            errors.append(dict(tool='residual-audit',error=str(e)))
     if 'bit-repair' in requested:
         bit_output=a.output/'indexed-bit-repair';repair_exe=a.bit_repair_exe or ((a.native.parent if a.native else TOOLS.parent/'build')/'repair_frame_bits.exe')
         try:
@@ -99,7 +127,9 @@ def main():
                         if row.get('operation')=='range' and (row.get('partition'),row.get('disk_offset'),row.get('length')) in repaired:row['status']='recovered-original-index-bit-repair'
                         out.write(json.dumps(row)+'\n')
                 manifest=analysis_manifest
-        except Exception as e:errors.append(dict(tool='bit-repair',error=str(e)))
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='rebuild.py:120')
+            errors.append(dict(tool='bit-repair',error=str(e)))
     mft=a.mft;inventory=a.inventory
     if mft is None:
         prep=a.output/'filesystem';runner.call('prepare_rebuild',[baseline,manifest,evidence/'layout.json',prep]);mft=prep/'mft.bin';inventory=prep/'affected-files.jsonl'
@@ -114,7 +144,9 @@ def main():
             runner.call(tool,args+[output]);new=maps(output);old=maps(current);prior={m['disk_offset']:m for m in new}
             if len(new)<len(old) or any(prior.get(m['disk_offset'])!=m for m in old):raise ValueError('stage contradicted an existing accepted mapping')
             current=output
-        except Exception as e:errors.append(dict(tool=tool,error=str(e)))
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='rebuild.py:135')
+            errors.append(dict(tool=tool,error=str(e)))
     while not a.rounds or round_number<a.rounds:
         before=len(maps(current));round_number+=1;print(json.dumps(dict(round=round_number,mappings=before)),flush=True)
         for name in DEFAULT_STAGES.split(','):
@@ -130,7 +162,9 @@ def main():
                     # A separate pass uses already known boundary bytes.
                     out=a.output/f'{runner.serial+1:04d}-ese-boundaries'
                     try:runner.call(tool,[a.source,baseline,mft,inventory,manifest,evidence,current,out,'--cross-boundary']);current=out
-                    except Exception as e:errors.append(dict(tool=tool,error=str(e)))
+                    except Exception as e:
+                        _audit_caught(e, locals(), expected=False, site='rebuild.py:151')
+                        errors.append(dict(tool=tool,error=str(e)))
             elif name=='cab':stage('extend_cab_mappings',common+[a.seven_zip])
             elif name=='duplicates':
                 pairs=a.output/f'duplicate-pairs-{round_number:03d}.json'
@@ -140,7 +174,9 @@ def main():
                         out=a.output/f'{runner.serial+1:04d}-duplicates';args=[a.source,baseline,mft,manifest,evidence,current,out,'--pairs-json',pairs,'--allow-boundary','--stream-large-files','--allow-partial-donor']
                         if a.metadata_identity:args+=['--allow-metadata-duplicates']
                         runner.call('recover_duplicate_files',args);current=out
-                except Exception as e:errors.append(dict(tool='duplicates',error=str(e)))
+                except Exception as e:
+                    _audit_caught(e, locals(), expected=False, site='rebuild.py:161')
+                    errors.append(dict(tool='duplicates',error=str(e)))
             elif name=='chakra':
                 from rebuild_context import Context
                 ctx=Context(a.source,baseline,mft,manifest,evidence,current)
@@ -153,6 +189,7 @@ def main():
                         if header[:4]!=b'ChBc':continue
                         out=a.output/f'{runner.serial+1:04d}-chakra';runner.call('recover_chakra_offsets',[a.source,baseline,mft,manifest,evidence,current,out,'--record',row['record']]);current=out
                     except Exception as e:
+                        _audit_caught(e, locals(), expected=False, site='rebuild.py:173')
                         if 'header' in locals() and header[:4]==b'ChBc':errors.append(dict(tool='chakra',record=row['record'],error=str(e)))
                 ctx.close()
             elif name in ('fat-directories','fat-signed-pe','fat-joint-pe','ntfs-joint-pe'):
@@ -161,7 +198,9 @@ def main():
                     for minimum,maximum in ((8192,4*1024**2),(4*1024**2+1,256*1024**2)):
                         out=a.output/f'{runner.serial+1:04d}-ntfs-joint'
                         try:runner.call(tool,[a.source,baseline,manifest,evidence,current,out,'--partition',2,'--mft',mft,'--inventory',inventory,'--minimum-missing',1,'--minimum-file-size',minimum,'--maximum-file-size',maximum,'--per-file-budget',a.per_file_budget]);current=out
-                        except Exception as e:errors.append(dict(tool=name,error=str(e)))
+                        except Exception as e:
+                            _audit_caught(e, locals(), expected=False, site='rebuild.py:182')
+                            errors.append(dict(tool=name,error=str(e)))
                 else:stage(tool,[a.source,baseline,manifest,evidence,current])
             elif name=='fat-duplicates':stage('recover_fat_duplicates',[a.source,baseline,mft,manifest,evidence,current])
             elif name=='installer-hashes':
@@ -169,7 +208,9 @@ def main():
                 try:
                     runner.call('collect_installer_hashes',[a.source,baseline,mft,inventory,manifest,evidence,current,collected])
                     if json.loads((collected/'hash-targets.json').read_text()):stage('recover_file_hashes',[a.source,baseline,mft,manifest,evidence,current,collected/'hash-targets.json'])
-                except Exception as e:errors.append(dict(tool=name,error=str(e)))
+                except Exception as e:
+                    _audit_caught(e, locals(), expected=False, site='rebuild.py:190')
+                    errors.append(dict(tool=name,error=str(e)))
             elif name=='catalog-hashes':
                 collected=a.output/f'catalog-hashes-{round_number:03d}'
                 try:
@@ -178,7 +219,9 @@ def main():
                     out=a.output/f'{runner.serial+1:04d}-recover_catalog_sequences'
                     runner.call('recover_catalog_sequences',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl',out,'--per-file-budget',a.per_file_budget])
                     stage('bind_inf_catalog_candidates',[a.source,baseline,mft,inventory,manifest,evidence,current,out/'recovered_files'])
-                except Exception as e:errors.append(dict(tool=name,error=str(e)))
+                except Exception as e:
+                    _audit_caught(e, locals(), expected=False, site='rebuild.py:199')
+                    errors.append(dict(tool=name,error=str(e)))
         if len(maps(current))==before:fixed_point=True;break
     validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated]);current=validated
     supplements={}
@@ -201,8 +244,7 @@ def main():
         runner.call('refine_vhdx',args);args=[original_baseline,revised,copylog,journal,a.output/'baseline-preservation.json']
         if a.previous_refinement:args+=['--previous-refinement',a.previous_refinement,'--previous-validation',a.previous_validation]
         runner.call('verify_refined_clone',args)
-        check=subprocess.run([str(a.qemu_img),'check',str(revised)],capture_output=True,text=True);(a.output/'qemu-check.txt').write_text(check.stdout+check.stderr)
-        if check.returncode:raise ValueError('rebuilt container QEMU check failed')
+        runner.process('qemu-container-check',[str(a.qemu_img),'check',str(revised)])
     runner.call('export_unresolved',[evidence,current/'accepted-mappings.json',a.output/'decoded-residual'])
     runner.call('refinement_coverage',[a.source,evidence,current/'accepted-mappings.json',a.output/'encoded-residual'])
     runner.call('rescue_unplaced_files',[evidence,current/'accepted-mappings.json',a.output/'recovered_files'])
@@ -241,4 +283,15 @@ def main():
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary,indent=2),flush=True);return 2
 
 
-if __name__=='__main__':sys.exit(main())
+if __name__=='__main__':
+    try:
+        result=main()
+    except SystemExit as failure:
+        if ACTIVE_RUNNER is not None:ACTIVE_RUNNER.audit.finish(failure.code,failure if failure.code else None)
+        raise
+    except BaseException as failure:
+        if ACTIVE_RUNNER is not None:ACTIVE_RUNNER.audit.finish(130 if isinstance(failure,KeyboardInterrupt) else 1,failure)
+        traceback.print_exc();sys.exit(130 if isinstance(failure,KeyboardInterrupt) else 1)
+    else:
+        if ACTIVE_RUNNER is not None:ACTIVE_RUNNER.audit.finish(result)
+        sys.exit(result)

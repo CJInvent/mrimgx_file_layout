@@ -137,6 +137,23 @@ Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a
 nonzero failure and never create a successful completion report.
 
+## Audit logs
+
+Every initialized run writes `audit-summary.log`, `audit-summary.json`,
+`audit-events.jsonl`, and `audit-errors.jsonl`, including fatal discovery/startup
+failures. Errors and warnings are appended immediately with tool, stage, file or
+record context and traceback. Child-process failures retain their complete stage
+logs. Effective arguments include each tool's default search bounds; source-code
+and executable fingerprints detect program changes during a run.
+
+Unreadable/unsupported records, operational failures, source corruption and
+mapping conflicts remain distinguishable. Expected unsuccessful format/hash
+probes are aggregated by exception class/message and source site, with exact
+counts and examples; millions of normal nonmatches are not reported as millions
+of missing files. `summary.json` links the consolidated audit and reports error
+and warning totals. These logs make a partial result auditable; they never turn
+bounded searches into proof that every remaining byte is unmappable.
+
 Current mapping stages support one unencrypted, unsplit full image, the tested
 FAT EFI partition at index 0, and Windows NTFS at index 2 with 4096-byte clusters
 and 143360-byte frames. Other geometry is rejected, not treated as tested support.

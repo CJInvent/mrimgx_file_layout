@@ -3,6 +3,7 @@
 Requires at least three distinct file starts, distinct sizes and MFT records
 agreeing on one unique frame base. Size alone never accepts a placement.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -68,7 +69,9 @@ def main():
             if runs[0][1]*4096<size:continue
             address=runs[0][0]*4096;base=address-address%stride
             if unknown(base):targets[(ext[1:],size)].append(dict(base=base,address=address,record=row['record'],filename=pathlib.PureWindowsPath(path).name))
-        except Exception:continue
+        except Exception as _audit_error:
+            _audit_caught(_audit_error, locals(), expected=False, site='extend_structured_files.py:71')
+            continue
     db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);used={fid for m in accepted for fid in m['frames']}
     pending=collections.defaultdict(list)
     with (a.evidence/'orphan-decoded.bin').open('rb') as corpus,a.source.open('rb') as source,(a.output/'structured-file-evidence.jsonl').open('x') as log:
@@ -80,7 +83,9 @@ def main():
                 kind='png' if data[off:off+8]==b'\x89PNG\r\n\x1a\n' else 'gz' if data[off:off+3]==b'\x1f\x8b\x08' else None
                 if kind is None:continue
                 try:length=file_length(data[off:],kind)
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='extend_structured_files.py:83')
+                    continue
                 for target in targets.get((kind,length),[]):
                     base=target['address']-off
                     if base==target['base'] and base%stride==0:votes[base].append(dict(target,frame_offset=off,length=length,format=kind,crc_valid=True))

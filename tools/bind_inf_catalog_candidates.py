@@ -4,6 +4,7 @@ Only a complete surviving [Version] section naming a catalog in the original
 NTFS directory, plus that freshly checked catalog's File member attribute,
 provides an original whole-file hash. Sequence nomination alone never does.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,json,pathlib,re,sqlite3
 from rebuild_context import Context
 from recover_duplicate_files import file_extents,frame_pieces
@@ -57,7 +58,9 @@ def main():
                     try:
                         named=ctx.fs.mft.get(candidate_path)
                         if named.size()==len(catalog_data) and not ctx.holes(named) and named.open().read()==catalog_data:matched.append(candidate_path)
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='bind_inf_catalog_candidates.py:60')
+                        continue
                 if not matched:raise ValueError('referenced catalog not readable in original NTFS directory')
                 exported=a.output/f'{number}-original.cat'
                 if not exported.exists():
@@ -91,7 +94,9 @@ def main():
                         for off,logical,n in pieces[base]:
                             part=contents[sha][off:off+n];supplemental.append(dict(partition=2,disk_offset=ctx.origin+base+off,length=n,source_offset=f[1],stored_length=f[2],source_decoded_length=ctx.stride,source_decoded_md5=f[5].hex(),source_decoded_sha256=sha,decoded_slice_offset=off,decoded_md5=hashlib.md5(part).hexdigest(),sha256=hashlib.sha256(part).hexdigest(),evidence=[dict(method='catalog-validated-file-slice',record=number,path=path,file_size=size,file_logical_offset=logical,hash_kind='flat',algorithm=proof['algorithm'],expected_digest=proof['digest'],catalog=proof,historical_component_version_binding=True,binding=binding,enclosing_frame_placement_authorized=False)]))
                 report.update(valid=True,binding=binding,original_digest=proof['digest'])
-            except Exception as e:report['error']=str(e)
+            except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='bind_inf_catalog_candidates.py:94')
+                report['error']=str(e)
             print(json.dumps(report),flush=True)
     conflicts=[]
     for base,items in sorted(pending.items()):

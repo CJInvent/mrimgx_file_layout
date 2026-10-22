@@ -4,6 +4,7 @@ At least two checksum transitions must validate within the orphan. Salt identity
 and original file runlist/grid must yield exactly one destination. No WAL replay.
 Format: https://www.sqlite.org/fileformat2.html#wal_file_format
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -68,7 +69,9 @@ def main():
             big=bool(magic&1)
             if checksum(header[:24],big=big)!=struct.unpack_from('>II',header,24):continue
             targets.append(dict(record=row['record'],physical=physical,size=size,page=page,salt=bytes(header[16:24]),big=big))
-        except Exception as e:errors.append(dict(record=row['record'],error=str(e)))
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='recover_sqlite_wal.py:71')
+            errors.append(dict(record=row['record'],error=str(e)))
     db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);used={f for m in accepted for f in m['frames']};pending=collections.defaultdict(list)
     with (a.evidence/'orphan-decoded.bin').open('rb') as corpus:
         for f in db.execute('SELECT id,source_offset,stored_length,export_offset,decoded_length,md5,sha256 FROM frames'):

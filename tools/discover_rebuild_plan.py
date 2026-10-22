@@ -4,6 +4,7 @@ Unverified/erased containers stay unverified. Sampled original decoded hashes
 corroborate array alignment; the native converter must still check every entry.
 No offsets or partition sizes are supplied by an operator.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,hashlib,json,math,pathlib,struct
 import zstandard
 from forensic_residuals import root_layout,merge_ranges,complement
@@ -47,7 +48,9 @@ def discover(source):
                 try:
                     decoder=zstandard.ZstdDecompressor().decompressobj();encoded=read_at(f,pos,nbytes,size);data=decoder.decompress(encoded)
                     if decoder.eof and not decoder.unused_data and 0<len(data)<=p['_header']['block_size'] and hashlib.md5(data).digest()==md5:valid.append(dict(block=bi,source_offset=pos,decoded_bytes=len(data),original_md5=md5.hex()))
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='discover_rebuild_plan.py:50')
+                    continue
             end=index+32+expected
             if pi+1<len(layout['disks'][0]['partitions']):
                 nextname=header(end)[0]
@@ -91,7 +94,9 @@ def bootstrap_boot(source,plan):
                             p=parts[pi];fs=p['_file_system'];geo=p['_geometry']
                             if len(data)!=p['_header']['block_size'] or sector!=512 or spc!=fs['sectors_per_cluster'] or abs((total+1)*sector-geo['length'])>sector or geo['start']+mft*sector*spc!=fs['mft_offset']:continue
                             sha=hashlib.sha256(data).hexdigest();found[pi][sha]=dict(source_offset=pos,stored_length=stored,decoded_md5=hashlib.md5(data).hexdigest(),reason='Unique carved NTFS boot frame: OEM/BPB, root geometry, total sectors and MFT address agree. Original index digest unavailable; corroborate through readable MFT before use.')
-                    except Exception:continue
+                    except Exception as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='discover_rebuild_plan.py:94')
+                        continue
                 print(json.dumps(dict(boot_scan_source_end=start+window,candidates={str(pi):len(x) for pi,x in found.items()})),flush=True)
     reports=[]
     for pi,candidates in found.items():

@@ -4,6 +4,7 @@ Requires agreeing FAT copies, valid directory-entry metadata and child chains.
 Fully known parents must actually reference the child; missing parent pages are
 allowed only with multiple independent valid child entries. Source order unused.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,hashlib,io,json,pathlib,sqlite3,struct
 import zstandard
 from mapped_volume import MappedVolume
@@ -73,8 +74,12 @@ def main():
                     while stream.tell()<len(page):
                         start=stream.tell()
                         try:child=DirectoryEntry(fat,stream)
-                        except LastEmptyDirectoryError:break
-                        except EmptyDirectoryError:continue
+                        except LastEmptyDirectoryError as _audit_error:
+                            _audit_caught(_audit_error, None, expected=True, site='recover_fat_directories.py:76')
+                            break
+                        except EmptyDirectoryError as _audit_error:
+                            _audit_caught(_audit_error, None, expected=True, site='recover_fat_directories.py:77')
+                            continue
                         if stream.tell()<=start:raise ValueError('directory parser made no progress')
                         if child.is_volume_id():continue
                         if child.dirent.DIR_Attr&0xc0:raise ValueError('directory attribute reserved bits')
@@ -84,7 +89,9 @@ def main():
                         elif child.size:raise ValueError('nonempty child without cluster')
                         children.append(dict(name=child.name,cluster=child.cluster,size=child.size,directory=child.is_directory()))
                     candidates.append(dict(frame=f,base=base,decoded_offset=pos,cluster=cluster,parent=parent,children=children))
-                except Exception:continue
+                except Exception as _audit_error:
+                    _audit_caught(_audit_error, None, expected=True, site='recover_fat_directories.py:87')
+                    continue
     bycluster=collections.defaultdict(list)
     for c in candidates:bycluster[c['cluster']].append(c)
     pending=collections.defaultdict(list);reports=[]

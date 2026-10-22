@@ -4,6 +4,7 @@ Source order only nominates combinations. A bounded search against a set of
 catalog versions cannot establish the unique historical file, so even complete
 hash matches remain external candidates with their possible NTFS metadata.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,json,pathlib,sqlite3
 from rebuild_context import Context
 from recover_duplicate_files import file_extents,frame_pieces
@@ -93,6 +94,7 @@ def main():
                             target.with_suffix(target.suffix+'.json').write_text(json.dumps(metadata,indent=2));found.add(sha);count+=1;exported_bytes+=len(data);report['candidates']+=1;break
                 report['budget_reached']=report['checked']>=a.per_file_budget;reports.append(report);log.write(json.dumps(report)+'\n');log.flush();print(json.dumps(report),flush=True)
             except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='recover_catalog_sequences.py:95')
                 report=dict(record=row['record'],error=str(e));reports.append(report);log.write(json.dumps(report)+'\n');log.flush()
     ctx.close();db.close()
     for name in ('accepted-mappings.json','recovery-plan.json'):(a.output/name).write_bytes((a.mapping_directory/name).read_bytes())

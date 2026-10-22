@@ -4,6 +4,7 @@ Every member is decompressed and CRC-checked within explicit bounds. This stage
 requires two independent original crossing CRCs and a distinctive unique frame
 before proposing placement. Other internally valid archives remain external.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,io,json,pathlib,sqlite3,struct,zipfile,zlib,lzma
 from rebuild_context import Context
 from recover_duplicate_files import file_extents,frame_pieces
@@ -61,7 +62,9 @@ def original_crossing_crcs(template,mask,members,pieces):
             if existing is not None:existing['original_directory']=directory;continue
             start=item['compressed_start'];stop=item['compressed_end'];missing=sum(max(0,min(stop,logical+n)-max(start,logical)) for offset,logical,n in pieces)
             if missing:result.append(dict(name=item['name'],crc32=item['crc32'],missing_compressed_bytes=missing,compressed_start=start,compressed_end=stop,source='surviving-original-central-directory',original_directory=directory))
-    except (ValueError,OSError,zipfile.BadZipFile,struct.error):pass
+    except (ValueError,OSError,zipfile.BadZipFile,struct.error) as _audit_error:
+        _audit_caught(_audit_error, None, expected=True, site='recover_zip_files.py:64')
+        pass
     return result
 
 
@@ -102,7 +105,9 @@ def main():
                 for sha,content in contents.items():
                     report['checked']+=1;data=reconstruct(template,bases,pieces,[sha],contents)
                     try:members=validate_archive(data,a.maximum_expanded)
-                    except (ValueError,OSError,RuntimeError,EOFError,NotImplementedError,zipfile.BadZipFile,zlib.error,lzma.LZMAError):continue
+                    except (ValueError,OSError,RuntimeError,EOFError,NotImplementedError,zipfile.BadZipFile,zlib.error,lzma.LZMAError) as _audit_error:
+                        _audit_caught(_audit_error, None, expected=True, site='recover_zip_files.py:105')
+                        continue
                     digest=hashlib.sha256(data).hexdigest()
                     if digest in seen:continue
                     f=frames[sha]
@@ -118,7 +123,9 @@ def main():
                         pending[base].append((sha,dict(method='zip-original-member-crcs-and-directory',record=row['record'],file_size=size,file_sha256_observed=digest,original_crossing_crcs=crcs,original_missing_pieces=pieces[base],known_file_bytes=len(known))))
                         side=target.with_suffix(target.suffix+'.json');meta=json.loads(side.read_text());meta.update(placement_status='original-independent-crcs-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_this_stage=False);side.write_text(json.dumps(meta,indent=2));report['qualified_full_frame']=True
                 reports.append(report);log.write(json.dumps(report)+'\n');log.flush();print(json.dumps(report),flush=True)
-            except Exception as e:log.write(json.dumps(dict(record=row['record'],error=str(e)))+'\n');log.flush()
+            except Exception as e:
+                _audit_caught(e, locals(), expected=False, site='recover_zip_files.py:121')
+                log.write(json.dumps(dict(record=row['record'],error=str(e)))+'\n');log.flush()
     conflicts=[]
     for base,items in sorted(pending.items()):
         if len({sha for sha,e in items})!=1:conflicts.append(base);continue

@@ -5,6 +5,7 @@ target bytes, an entirely covered donor, and exact orphan SHA256+MD5 matches.
 Boundary frames optionally require at least 32 KiB of exact, varied file bytes.
 Source frames are revalidated before acceptance; donor bytes are never copied.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -181,7 +182,9 @@ def main():
             for base,item in pair_pending.items():
                 if base in pending and pending[base][0][5]!=item[0][5]:conflicts.add(base);pending.pop(base)
                 if base not in conflicts:pending[base]=item
-        except Exception as e:report['rejected']=str(e)
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='recover_duplicate_files.py:184')
+            report['rejected']=str(e)
     for base,(f,e,rows) in sorted(pending.items()):
         source.seek(f[1]);data=zstandard.ZstdDecompressor().decompress(source.read(f[2]))
         if len(data)!=stride or hashlib.sha256(data).hexdigest()!=f[5] or hashlib.md5(data).digest()!=f[4]:raise ValueError('source digest mismatch')

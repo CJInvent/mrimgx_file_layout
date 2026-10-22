@@ -4,6 +4,7 @@ Requires at least 4 KiB of distinctive surviving file bytes, original runlists,
 and one unique full-frame result. Catalog membership validates content, not
 certificate trust or the complete historical component-version relationship.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,collections,hashlib,json,pathlib,sqlite3
 from rebuild_context import Context
 from recover_duplicate_files import file_extents,frame_pieces
@@ -117,7 +118,9 @@ def main():
                             supplemental.append(dict(partition=2,disk_offset=ctx.origin+base+slice_off,length=len(part),source_offset=f[1],stored_length=f[2],source_decoded_length=ctx.stride,source_decoded_md5=f[5].hex(),source_decoded_sha256=sha,decoded_slice_offset=slice_off,decoded_md5=hashlib.md5(part).hexdigest(),sha256=hashlib.sha256(part).hexdigest(),evidence=[dict(method='catalog-validated-file-slice',record=row['record'],path=row.get('path'),file_size=size,file_logical_offset=start,hash_kind=kind,algorithm=algorithm,expected_digest=expected,catalog=proof,signature_hash_verified=True,historical_component_version_binding=False,enclosing_frame_placement_authorized=False)]))
                     report['supplemental_file_slices']=len([m for m in supplemental if m['evidence'][0]['record']==row['record']])
             print(json.dumps(report),flush=True)
-        except Exception:continue
+        except Exception as _audit_error:
+            _audit_caught(_audit_error, locals(), expected=False, site='recover_catalog_files.py:120')
+            continue
     conflicts=[]
     for base,items in sorted(pending.items()):
         if len({sha for sha,e in items})!=1:conflicts.append(base);continue

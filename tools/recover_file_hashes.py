@@ -5,6 +5,7 @@ original expected file hash, original MFT extents and a unique whole-frame SHA
 at each address among all tested successful reconstructions. No donor bytes are
 written. Inputs, baseline and original evidence stay read-only.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse,bisect,collections,functools,hashlib,itertools,json,pathlib,sqlite3
 import zstandard
 from safe_vhdx import VHDX
@@ -103,7 +104,9 @@ def main():
                         report.setdefault('rejected_small_or_repetitive_boundaries',[]).append(base);continue
                     evidence=dict(method='original-whole-file-hash-completion',record=target['record'],file_size=size,algorithm=algorithm,expected_digest=expected.hex(),hash_source=target.get('hash_source'),all_tested_solutions=len(solutions),source_order_only_nominated=True,validated_file_bytes_in_frame=len(parts))
                     pending[base].append((sha,evidence))
-        except Exception as e:report['error']=repr(e)
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='recover_file_hashes.py:106')
+            report['error']=repr(e)
         print(json.dumps(report),flush=True)
     conflicts=[]
     for base,items in sorted(pending.items()):

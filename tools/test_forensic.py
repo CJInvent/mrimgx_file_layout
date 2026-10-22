@@ -36,9 +36,34 @@ from placement_payload import payload as placement_payload
 from recover_catalog_sequences import projected_multi_hash
 from bind_inf_catalog_candidates import original_catalog_names
 from recover_zip_files import validate_archive,original_crossing_crcs,independently_crossing
+from rebuild_audit import Audit,caught,emit
+from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_audit_keeps_all_item_errors_and_counts_expected_rejections(self):
+        previous_audit=os.environ.get('REBUILD_AUDIT_LOG')
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);audit=Audit(root,dict(synthetic=True))
+            try:raise PermissionError(13,'synthetic denied')
+            except PermissionError as e:caught(e,dict(number=7),site='synthetic-file')
+            caught(ValueError('wrong format 12'),expected=True,site='synthetic-probe');caught(ValueError('wrong format 14'),expected=True,site='synthetic-probe');emit('unsupported','synthetic unsupported stream',severity='warning',context=dict(record=8));self.assertEqual(len(audit.errors.read_text().splitlines()),2)
+            result=audit.finish(2);self.assertEqual(result['severity_counts']['error'],1);self.assertEqual(result['severity_counts']['warning'],1);self.assertEqual(result['expected_rejected_candidate_count'],2);self.assertEqual(len(audit.errors.read_text().splitlines()),2);self.assertTrue(result['program_sources_unchanged']);self.assertIn('synthetic denied',(root/'audit-summary.log').read_text());self.assertEqual(os.environ.get('REBUILD_AUDIT_LOG'),previous_audit)
+
+    def test_audit_child_failure_keeps_file_exception_and_stage_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);(root/'logs').mkdir();runner=Runner(root);child=root/'child.py';child.write_text('import sys\nsys.path.insert(0,'+repr(str(pathlib.Path(__file__).parent))+')\nfrom rebuild_audit import caught\ntry: raise PermissionError(13,"child denied")\nexcept PermissionError as e: caught(e,dict(number=99),site="synthetic-child")\nraise RuntimeError("child fatal")\n')
+            with self.assertRaises(RuntimeError):runner.process('synthetic-child',[sys.executable,str(child)])
+            result=runner.audit.finish(1,RuntimeError('parent stage failed'));events=[json.loads(line) for line in runner.audit.errors.read_text().splitlines()];self.assertTrue(any(e.get('context',{}).get('number')==99 for e in events));self.assertTrue(any(e['category']=='uncaught-tool-error' and 'child fatal' in e['message'] for e in events));self.assertEqual(result['status'],'failed');self.assertIn('child fatal',(root/'logs/0001-synthetic-child.log').read_text());self.assertFalse(json.loads((root/'stages.json').read_text())[0]['success'])
+
+    def test_fatal_rebuild_discovery_always_writes_audit_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);output=root/'failure';command=[sys.executable,str(pathlib.Path(__file__).with_name('rebuild.py')),str(root/'missing-source'),'--output',str(output),'--qemu-img',str(root/'missing-qemu'),'--seven-zip',str(root/'missing-zip')];result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,1);audit=json.loads((output/'audit-summary.json').read_text());summary=json.loads((output/'summary.json').read_text());self.assertTrue(audit['fatal']);self.assertEqual(audit['status'],'failed');self.assertFalse(summary['rebuild_completed']);self.assertTrue((output/'audit-summary.log').is_file());self.assertTrue((output/'audit-errors.jsonl').stat().st_size)
+
+    def test_audit_flags_program_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);audit=Audit(root);program=root/'synthetic.py';program.write_text('before');audit.program[str(program)]=hashlib.sha256(program.read_bytes()).hexdigest();program.write_text('after');result=audit.finish(2);self.assertFalse(result['program_sources_unchanged']);self.assertTrue(any(e['category']=='program-changed' for e in result['error_and_warning_groups']))
+
     def test_zip_crc_boundaries_expansion_and_original_coverage(self):
         import io,zipfile
         stream=io.BytesIO()

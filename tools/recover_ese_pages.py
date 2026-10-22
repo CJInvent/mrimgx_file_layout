@@ -5,6 +5,7 @@ affected databases, and collective exact maximum DBTIME and OBJID agreement
 with the original checksum-valid database header. Structural inference, not an
 original backup digest. No page correction or database recovery is performed.
 """
+from rebuild_audit import caught as _audit_caught
 import argparse
 import bisect
 import collections
@@ -72,7 +73,9 @@ def main():
                 for offset in range(2*page,len(data)-page+1,page):
                     if known_range(physical+offset,physical+offset+page) and valid_large_page(data[offset:offset+page]):
                         surviving[row['record']].append(dict(pgno=struct.unpack_from('<I',data,offset+64)[0],dbtime=struct.unpack_from('<Q',data,offset+8)[0],objid=struct.unpack_from('<I',data,offset+24)[0]))
-        except Exception as e:errors.append(dict(record=row['record'],error=str(e)))
+        except Exception as e:
+            _audit_caught(e, locals(), expected=False, site='recover_ese_pages.py:75')
+            errors.append(dict(record=row['record'],error=str(e)))
     db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);results=[];pending=collections.defaultdict(list)
     with (a.evidence/'orphan-decoded.bin').open('rb') as corpus:
         for f in db.execute('SELECT id,source_offset,stored_length,export_offset,decoded_length,md5,sha256 FROM frames'):
