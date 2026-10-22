@@ -55,7 +55,7 @@ def prepare(baseline,manifest,layout,output,partition=2):
                         path=record.filename
                     out.write(json.dumps(dict(record=number,path=path,ranges=hits))+'\n');counts['affected_records']+=1
             except Exception as e:
-                _audit_caught(e, locals(), expected=False, site='prepare_rebuild.py:52')
+                _audit_caught(e, dict(number=number,partition=partition), expected=False, site='prepare_rebuild.py:52')
                 counts['unreadable_records']+=1
                 if counts['unreadable_records']<=10:print('MFT',number,str(e),flush=True)
             if time.monotonic()-last>10:print(json.dumps(dict(record=number,counts=counts)),flush=True);last=time.monotonic();out.flush()

@@ -11,7 +11,7 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes'
+DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes,metadata-rescue'
 ACTIVE_RUNNER=None
 
 
@@ -150,7 +150,7 @@ def main():
     while not a.rounds or round_number<a.rounds:
         before=len(maps(current));round_number+=1;print(json.dumps(dict(round=round_number,mappings=before)),flush=True)
         for name in DEFAULT_STAGES.split(','):
-            if name not in requested or name in ('residual-audit','bit-repair'):continue
+            if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
             if name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
                 tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings','chromium-streams':'recover_chromium_streams','zip-files':'recover_zip_files'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
@@ -248,6 +248,7 @@ def main():
     runner.call('export_unresolved',[evidence,current/'accepted-mappings.json',a.output/'decoded-residual'])
     runner.call('refinement_coverage',[a.source,evidence,current/'accepted-mappings.json',a.output/'encoded-residual'])
     runner.call('rescue_unplaced_files',[evidence,current/'accepted-mappings.json',a.output/'recovered_files'])
+    if 'metadata-rescue' in requested:runner.call('rescue_unreadable_records',[a.source,baseline,mft,manifest,evidence,current,a.output/'recovered_files/metadata-records'])
     shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')
     if audit_output and (audit_output/'partial-decoded.bin').exists():
         target=a.output/'recovered_files/incomplete-decoding';target.mkdir();shutil.copy2(audit_output/'partial-decoded.bin',target/'partial-decoded.bin');shutil.copy2(audit_output/'summary.json',target/'partial-decoded.bin.json')

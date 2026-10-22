@@ -67,6 +67,12 @@ Source order can nominate combinations only; it never authorizes a placement.
 MFT nomination scans restore and validate sector update-sequence fixups before
 reading filenames or sizes. A sector-trailer stamp must not turn an ordinary
 installer/catalog size into an enormous value and silently exclude it.
+The `metadata-rescue` stage also preserves complete file data behind malformed
+UTF-16 filenames outside the image. It keeps original filename bytes, record
+references, runlists and matching surviving directory names in JSON. Only a
+private parser copy substitutes unpaired surrogate code units; no filesystem
+metadata is rewritten. Extension records, attribute lists and incomplete data
+remain outside this bounded fallback.
 
 Optional `--metadata-identity` enables the weaker, separately labeled duplicate
 inference using matching original filename, size and exact modification time.

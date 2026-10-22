@@ -41,6 +41,22 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_malformed_filename_rescue_keeps_data_and_original_metadata(self):
+        import struct
+        from dissect.ntfs.mft import MftRecord
+        from rescue_unreadable_records import parser_copy
+        name='broken\ud800-and-valid-\U0001f600.mum'.encode('utf-16-le',errors='surrogatepass');payload=b'original resident contents';raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1)
+        length=(90+len(name)+7)//8*8;struct.pack_into('<II',raw,56,48,length);struct.pack_into('<I',raw,72,66+len(name));struct.pack_into('<H',raw,76,24);struct.pack_into('<Q',raw,80,5|(7<<48));raw[144]=len(name)//2;raw[145]=1;raw[146:146+len(name)]=name;pos=56+length;length=(24+len(payload)+7)//8*8;struct.pack_into('<II',raw,pos,128,length);struct.pack_into('<I',raw,pos+16,len(payload));struct.pack_into('<H',raw,pos+20,24);raw[pos+24:pos+24+len(payload)]=payload;struct.pack_into('<I',raw,pos+length,0xffffffff);struct.pack_into('<I',raw,24,pos+length+8);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5';before=bytes(raw)
+        fixed,names=parser_copy(raw);self.assertEqual(bytes(raw),before);self.assertEqual(names[0]['raw_utf16_hex'],name.hex());self.assertEqual(names[0]['parent_record'],5);self.assertEqual(names[0]['parent_sequence'],7)
+        record=MftRecord.from_bytes(raw)
+        with self.assertRaises(UnicodeDecodeError):record.size()
+        record=MftRecord.from_bytes(raw);original_data=record.data[pos:pos+length];record.data=fixed;self.assertEqual(record.open().read(),payload);self.assertIn('\U0001f600',record.filename);self.assertIn('\ufffd',record.filename);self.assertEqual(fixed[pos:pos+length],original_data)
+        bad=bytearray(raw);bad[1022]^=1
+        with self.assertRaises(Exception):parser_copy(bad)
+        extension=bytearray(raw);struct.pack_into('<Q',extension,32,42);self.assertIsNone(parser_copy(extension))
+        malformed=bytearray(raw);struct.pack_into('<I',malformed,60,25)
+        with self.assertRaises(ValueError):parser_copy(malformed)
+
     def test_mft_candidate_names_crossing_sector_trailers_require_fixups(self):
         import struct
         raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1);struct.pack_into('<II',raw,56,16,344);name='long-name-for-recovery.catalog.cat';encoded=name.encode('utf-16-le');length=(90+len(encoded)+7)//8*8;struct.pack_into('<II',raw,400,48,length);struct.pack_into('<H',raw,420,24);raw[488]=len(name);raw[490:490+len(encoded)]=encoded;data_at=400+length;struct.pack_into('<II',raw,data_at,128,64);raw[data_at+8]=1;struct.pack_into('<Q',raw,data_at+48,987654);struct.pack_into('<I',raw,data_at+64,0xffffffff);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5';before=bytes(raw)
