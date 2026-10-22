@@ -19,11 +19,12 @@ def mark_manifest_restorations(recovered,verified,manifest_records,written):
     """Distinguish external copies of proven restored files from unresolved ones."""
     count=0
     for side in recovered.rglob('*.json'):
+        path=side.with_suffix('')
+        if not path.is_file():continue
         meta=json.loads(side.read_text())
         if not isinstance(meta,dict) or meta.get('kind') not in ('carved-file','whole-file-hash-candidate','catalog-sequence-candidate','zip-reconstruction-candidate'):continue
         resolved=[r['record'] for r in meta.get('possible_locations',[]) if r.get('record') in manifest_records and verified.get(r['record'],{}).get('sha256')==meta.get('sha256')]
         if not resolved:continue
-        path=side.with_suffix('')
         if hashlib.sha256(path.read_bytes()).hexdigest()!=meta['sha256']:raise ValueError('rescued candidate file changed before metadata resolution: '+str(path))
         meta.update(placement_status='original-component-manifest-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_rebuild=written,validated_records=sorted(set(resolved)),historical_component_version_binding=True)
         meta.setdefault('validation',{}).update(original_whole_file_digest_available=True,original_component_manifest_rechecked=True,historical_path_binding_proven=True,excluded_pe_fields_not_bound=False)
