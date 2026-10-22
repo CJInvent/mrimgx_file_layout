@@ -53,6 +53,14 @@ member hashes. Chakra records and duplicate donors are discovered automatically.
 Chromium body completion additionally checks original key identity and stream
 CRCs, requiring two crossing CRCs or nested checksum/hash evidence; a single
 CRC32 match is insufficient. MFT inventory respects a readable allocation bitmap.
+The `zip-files` stage reconstructs one-hole ZIP and Office archive candidates,
+requiring original file boundaries and decompression/CRC checks of every member
+within expansion bounds. It records which checksums actually survived in original
+local headers or the complete surviving central directory. A unique candidate
+with two distinct original CRCs covering separate missing member bodies (at
+least 256 bytes each), plus a unique distinctive full-frame boundary, can be
+placed after independent overlay validation. Other candidates remain external;
+newly supplied internal CRCs alone never authorize VHDX insertion.
 Source order can nominate combinations only; it never authorizes a placement.
 
 Optional `--metadata-identity` enables the weaker, separately labeled duplicate
@@ -64,6 +72,12 @@ Catalog searches also try bounded source-sequence combinations for files with
 two through eight missing frames. Complete digest matches from that broader
 search are exported as candidates, because a bounded search against multiple
 catalog versions cannot establish unique historical placement.
+An INF candidate can be promoted when its complete surviving original `[Version]`
+section names a readable catalog in its original NTFS directory, and that freshly
+signature-hash-checked catalog has one unambiguous digest for the original filename
+in its `File` member attribute. This binds an original whole-file hash. Source
+pieces and all surviving bytes are rechecked; enclosing frame boundaries must
+also be unique and distinctive, otherwise only the proven file slices qualify.
 
 ## Outputs and placement rules
 

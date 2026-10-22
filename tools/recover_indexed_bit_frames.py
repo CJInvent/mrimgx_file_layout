@@ -11,6 +11,7 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','manifest','evidence','mapping_directory','repair_exe','output'):ap.add_argument(name,type=pathlib.Path)
     ap.add_argument('--reuse-negative-attempts',type=pathlib.Path,help='reuse completed exhaustive zero-match tests only when their original encoded input is byte-identical')
+    ap.add_argument('--audit-only',action='store_true',help='record original decoded/index digest differences without launching native repair or proposing writes')
     a=ap.parse_args();a.output.mkdir(exist_ok=False);db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);maps=[] if str(a.mapping_directory)=='-' else json.loads((a.mapping_directory/'accepted-mappings.json').read_text());mapped={(m['partition'],m['disk_offset'],m['length']) for m in maps};reports=[];requests=[];before=a.source.stat();errors=[];data_end=json.loads((a.evidence/'coverage-summary.json').read_text())['data_region_end']
     targets=[row for row in map(json.loads,a.manifest.open()) if row.get('status')=='unrecoverable' and (row['partition'],row['disk_offset'],row['length']) not in mapped]
     # A temporary key table permits one sequential scan of a read-only
@@ -27,6 +28,11 @@ def main():
             source.seek(offset);raw=source.read(stored)
             if len(raw)!=stored:raise ValueError('source short read')
             if len(raw)<4 or sum((a^b).bit_count() for a,b in zip(raw[:4],bytes.fromhex('28b52ffd')))>1 or sum(bool(b) for b in md5)<12:report['skipped']='not a normal Zstd magic within one bit, or insufficient original digest bytes';continue
+            try:
+                decoded=zstandard.ZstdDecompressor().decompress(raw,max_output_size=4*1024**2)
+                observed=hashlib.md5(decoded).digest();report.update(original_decoding_succeeded=True,observed_decoded_bytes=len(decoded),observed_decoded_md5=observed.hex(),index_digest_differing_bits=sum((x^y).bit_count() for x,y in zip(md5,observed)),index_digest_differing_bytes=sum(x!=y for x,y in zip(md5,observed)))
+            except Exception as e:report.update(original_decoding_succeeded=False,decode_error=str(e))
+            if a.audit_only:report['status']='audit-only-no-native-test';continue
             if a.reuse_negative_attempts:
                 old=a.reuse_negative_attempts/f'{partition}-{block}.log';old_input=a.reuse_negative_attempts/f'{partition}-{block}-original.bin'
                 try:
@@ -57,7 +63,7 @@ def main():
             (decoded.with_suffix('.bin.json')).write_text(json.dumps(dict(kind='verified-repaired-frame',placement_status='original-index-address-validated',vhdx_written=False,**request),indent=2))
     after=a.source.stat()
     if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('source changed')
-    (a.output/'supplemental-placements.json').write_text(json.dumps(requests,indent=2));(a.output/'reports.json').write_text(json.dumps(reports,indent=2));summary=dict(attempted=len(reports),verified_repairs=len(requests),verified_decoded_bytes=sum(m['length'] for m in requests),source_stat_unchanged=True,errors=errors,scope='Exhaustive single encoded-bit flips within native bounds only; no unique repair excludes this repair class, not every possible reconstruction. Original encoded input and repair derivatives are preserved.');(a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
+    (a.output/'supplemental-placements.json').write_text(json.dumps(requests,indent=2));(a.output/'reports.json').write_text(json.dumps(reports,indent=2));summary=dict(attempted=len(reports),audit_only=a.audit_only,native_searches=sum('returncode' in r for r in reports),verified_repairs=len(requests),verified_decoded_bytes=sum(m['length'] for m in requests),source_stat_unchanged=True,errors=errors,scope='Exhaustive single encoded-bit flips within native bounds only, unless audit_only is true. No unique repair excludes this repair class, not every possible reconstruction. Original encoded input and repair derivatives are preserved.');(a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
     if errors:raise RuntimeError('some bit-repair attempts failed; inspect reports')
 
 

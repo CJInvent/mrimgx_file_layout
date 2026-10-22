@@ -34,9 +34,33 @@ from recover_catalog_files import projected_hash
 from recover_chromium_streams import layout as cache_layout,validate as cache_validate,extra_validation as cache_extra,INITIAL,FINAL
 from placement_payload import payload as placement_payload
 from recover_catalog_sequences import projected_multi_hash
+from bind_inf_catalog_candidates import original_catalog_names
+from recover_zip_files import validate_archive,original_crossing_crcs,independently_crossing
 
 
 class ForensicTests(unittest.TestCase):
+    def test_zip_crc_boundaries_expansion_and_original_coverage(self):
+        import io,zipfile
+        stream=io.BytesIO()
+        with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_STORED) as archive:archive.writestr('first.bin',os.urandom(1024));archive.writestr('second.bin',os.urandom(512))
+        data=stream.getvalue();members=validate_archive(data);self.assertEqual(len(members),2);mask=bytearray(b'\1'*len(data));template=bytearray(data);mask[100:200]=bytes(100);template[100:200]=bytes(100);proof=original_crossing_crcs(template,mask,members,[(0,100,100)]);self.assertEqual(len(proof),1);self.assertEqual(proof[0]['missing_compressed_bytes'],100)
+        mask[:30]=bytes(30);proof=original_crossing_crcs(template,mask,members,[(0,100,100)]);self.assertEqual(proof[0]['source'],'surviving-original-central-directory');self.assertFalse(independently_crossing(proof))
+        mask=bytearray(b'\1'*len(data));template=bytearray(data);pieces=[(0,100,300),(0,members[1]['compressed_start']+10,300)]
+        for item in members:off=item['header_offset'];mask[off:off+30]=bytes(30);template[off:off+30]=bytes(30)
+        for off,logical,n in pieces:mask[logical:logical+n]=bytes(n);template[logical:logical+n]=bytes(n)
+        proof=original_crossing_crcs(template,mask,members,pieces);self.assertEqual(len(proof),2);self.assertTrue(independently_crossing(proof));cd=proof[0]['original_directory'];mask[cd['start']:cd['end']]=bytes(cd['end']-cd['start']);self.assertEqual(original_crossing_crcs(template,mask,members,pieces),[])
+        with self.assertRaises(ValueError):validate_archive(data,100)
+        for invalid in (data+b'ignored trailing bytes',b'prefix'+data,data[:-1]):
+            with self.assertRaises(ValueError):validate_archive(invalid)
+        invalid=bytearray(data);invalid[100]^=1
+        with self.assertRaises(zipfile.BadZipFile):validate_archive(invalid)
+
+    def test_inf_reference_requires_surviving_complete_version_section(self):
+        data='[Version]\r\nCatalogFile = driver.cat ; comment\r\nDriverVer=01/01/2020,1.0\r\n[Manufacturer]\r\n'
+        self.assertEqual(original_catalog_names(data.encode()),['driver.cat']);self.assertEqual(original_catalog_names(('\ufeff'+data).encode('utf-16-le')),['driver.cat'])
+        for text in ('[Version]\nCatalogFile=driver.cat\n','[Manufacturer]\nCatalogFile=driver.cat\n[Strings]\n',data.replace('driver.cat','..\\driver.cat'),data.replace('driver.cat','%catalog%.cat')):
+            with self.assertRaises(ValueError):original_catalog_names(text.encode())
+
     def test_negative_repair_resume_binds_original_input_digest_and_length(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory);data=os.urandom(128);encoded=zstandard.ZstdCompressor().compress(data);source=root/'source';source.write_bytes(encoded);evidence=root/'evidence';evidence.mkdir();(evidence/'coverage-summary.json').write_text(json.dumps(dict(data_region_end=len(encoded))))

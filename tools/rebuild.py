@@ -9,7 +9,7 @@ from make_recovery_plan import make_plan
 from forensic_residuals import root_layout
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes'
+DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes'
 
 
 def corrupted(manifest):
@@ -120,8 +120,8 @@ def main():
         for name in DEFAULT_STAGES.split(','):
             if name not in requested or name in ('residual-audit','bit-repair'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
-            if name in ('appx','signed-pe','structured','pdf','wal','ese','png','chromium-streams'):
-                tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings','chromium-streams':'recover_chromium_streams'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
+            if name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
+                tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings','chromium-streams':'recover_chromium_streams','zip-files':'recover_zip_files'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
                 args=common
                 # Output positional precedes options; stage accepts option
                 # arguments only through explicit helper below.
@@ -177,6 +177,7 @@ def main():
                     stage('recover_catalog_files',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl'])
                     out=a.output/f'{runner.serial+1:04d}-recover_catalog_sequences'
                     runner.call('recover_catalog_sequences',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl',out,'--per-file-budget',a.per_file_budget])
+                    stage('bind_inf_catalog_candidates',[a.source,baseline,mft,inventory,manifest,evidence,current,out/'recovered_files'])
                 except Exception as e:errors.append(dict(tool=name,error=str(e)))
         if len(maps(current))==before:fixed_point=True;break
     validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated]);current=validated
@@ -184,7 +185,7 @@ def main():
     if a.previous_refinement:
         for row in map(json.loads,a.previous_refinement.open()):
             if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
-    paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))
+    paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))
     if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
     for path in paths:
         for m in json.loads(path.read_text()):
@@ -213,10 +214,26 @@ def main():
         for item in bit_output.glob('*-decoded.bin*'):shutil.copy2(item,target/item.name)
         if (bit_output/'summary.json').exists():shutil.copy2(bit_output/'summary.json',target/'summary.json')
     candidates=a.output/'recovered_files/candidates'
-    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))):
+    verified_files={r.get('record'):r for r in json.loads((validated/'file-validation.json').read_text()) if r.get('valid')}
+    bound_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-inf-catalog-reference-and-named-member'}
+    zip_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='zip-original-member-crcs-and-directory'}
+    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))+list(a.output.glob('*-recover_zip_files/recovered_files'))):
         target=candidates/directory.parent.name;target.mkdir(parents=True,exist_ok=False)
         for item in directory.iterdir():
-            if item.is_file():shutil.copy2(item,target/item.name)
+            if not item.is_file():continue
+            shutil.copy2(item,target/item.name)
+            if item.name.endswith('.bin.json'):
+                meta=json.loads(item.read_text())
+                if meta.get('kind')=='catalog-sequence-candidate':
+                    resolved=[r['record'] for r in meta.get('possible_locations',[]) if r['record'] in bound_records and verified_files.get(r['record'],{}).get('sha256')==meta['sha256']]
+                    if resolved:
+                        meta.update(placement_status='original-inf-catalog-and-runlist-validated',historical_component_version_binding=True,vhdx_insertion_authorized=True,vhdx_written_by_rebuild=not a.search_only,validated_records=resolved,placement_validation=str((validated/'file-validation.json').resolve()))
+                        (target/item.name).write_text(json.dumps(meta,indent=2))
+                elif meta.get('kind')=='zip-reconstruction-candidate':
+                    resolved=[r['record'] for r in meta.get('possible_locations',[]) if r['record'] in zip_records and verified_files.get(r['record'],{}).get('sha256')==meta['sha256']]
+                    if resolved:
+                        meta.update(placement_status='original-independent-crcs-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_rebuild=not a.search_only,validated_records=resolved,placement_validation=str((validated/'file-validation.json').resolve()))
+                        (target/item.name).write_text(json.dumps(meta,indent=2))
     runner.call('enrich_recovered_metadata',[a.output/'recovered_files',baseline,mft,inventory,evidence/'layout.json'])
     for path in protected:
         if (path.stat().st_size,path.stat().st_mtime_ns)!=stats[str(path.resolve())]:raise ValueError('protected input changed')
