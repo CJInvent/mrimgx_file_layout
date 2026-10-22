@@ -1,6 +1,7 @@
 zstandard
 dissect.ntfs
 dissect.hypervisor
+dissect.fat
 numpy
 pefile
 asn1crypto

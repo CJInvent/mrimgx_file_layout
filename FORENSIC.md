@@ -126,6 +126,38 @@ structural evidence. Original-source MD5 absence remains explicit even when a
 new mapping has strong file-content evidence. Source ordering alone never
 establishes a disk address.
 
+### FAT and joint PE completion
+
+`recover_fat_directories.py` uses directory dot-entry self-clusters, parent
+relationships, valid live child chains and agreeing FAT copies. Fully readable
+parents must reference the child; a missing parent page requires additional
+valid child entries. `recover_fat_duplicates.py` follows FAT file chains and
+matches distinctive bytes from intact same-name/size NTFS duplicates.
+
+`recover_fat_signed_pe.py` solves individual missing FAT frames with a complete
+embedded image digest, OriginalFilename and language identity. Explicit shared
+boot MUI names are supported, based on intact reference files. The joint solver
+`recover_fat_multiframe_pe.py` also supports `--partition 2 --mft ... --inventory
+...` for NTFS. Bounded source-proximity combinations only nominate candidates;
+acceptance always requires the complete cryptographic image digest. Cached hash
+prefixes accelerate permutations without weakening that check. Certificate tails
+and other bytes excluded from Authenticode can remain ambiguous and must not be
+treated as validated image content. Conflicting whole-frame candidates remain
+unmapped even when their hashed portions agree.
+
+`mapped_volume.py` lets read-only parsers see prior validated additions without
+rewriting the image during exploration. `merge_mapping_sets.py` combines
+additive branches, retaining base mappings and rejecting conflicting or
+overlapping destinations before any VHDX operation.
+
+`recover_png_crc_grid.py` uses surviving PNG headers, MFT extents, regular IDAT
+chunk grids and CRCs spanning known/candidate bytes to nominate placements.
+Variable IDAT chunk sizes and a single final missing frame can be solved too.
+At least 256 known bytes must corroborate a crossing CRC. Proposals remain
+local until the whole image passes every chunk CRC, zlib/Adler termination,
+exact scanline sizing and filter-byte validation. Observed file SHA-256 is
+recorded as an observation, never substituted for an original expected digest.
+
 `safe_vhdx.py` bounds third-party VHDX reads at payload block boundaries, avoiding
 incorrect physical continuation across BAT ZERO/absent blocks in affected Dissect
 versions. Regression tests include nonzero physical neighbors across a zero

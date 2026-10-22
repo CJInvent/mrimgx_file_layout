@@ -23,9 +23,51 @@ from recover_duplicate_files import distinctive,FileView,frame_pieces,exclude_ho
 from discover_duplicate_pairs import candidate_records
 from recover_sqlite_wal import checksum as wal_checksum,transitions
 from ese_checksums import xe_checksum
+from mapped_volume import MappedVolume
+from recover_fat_signed_pe import name_variants
+from recover_fat_multiframe_pe import assignment_digest,digest,patch
+from merge_mapping_sets import combine
+from recover_png_crc_grid import validate_png,first_idat
 
 
 class ForensicTests(unittest.TestCase):
+    def test_png_complete_crc_zlib_and_scanline_validation(self):
+        import struct
+        def block(kind,payload):return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload)&0xffffffff)
+        header=block(b'IHDR',struct.pack('>IIBBBBB',2,2,8,0,0,0,0));payload=zlib.compress(b'\0\x01\x02\0\x03\x04')
+        def assemble(body):return b'\x89PNG\r\n\x1a\n'+header+block(b'IDAT',body)+block(b'IEND',b'')
+        png=assemble(payload);self.assertEqual(first_idat(png),(33,len(payload)));self.assertEqual(validate_png(png)['decoded_scanline_bytes'],6)
+        corrupt=bytearray(payload);corrupt[-1]^=1
+        with self.assertRaises(zlib.error):validate_png(assemble(bytes(corrupt)))
+        with self.assertRaises(ValueError):validate_png(png+b'overlay')
+        with self.assertRaises(ValueError):validate_png(assemble(zlib.compress(b'\x05\x01\x02\0\x03\x04')))
+    def test_additive_branch_merge_rejects_conflicts_and_baseline_changes(self):
+        original=dict(disk_offset=0,length=8,partition=0,reserved=False,block=0,sha256='a')
+        extra=dict(original,disk_offset=8,block=1,sha256='b')
+        self.assertEqual(combine([original],[[original,extra],[original,extra]]),[original,extra])
+        with self.assertRaises(ValueError):combine([original],[[dict(original,sha256='c')]])
+        with self.assertRaises(ValueError):combine([original],[[original,extra],[original,dict(extra,sha256='c')]])
+        with self.assertRaises(ValueError):combine([original],[[original,dict(extra,disk_offset=4)]])
+    def test_mapped_volume_reads_crossing_patch_and_baseline(self):
+        import io
+        mappings={10:dict(length=4,source_offset=7,stored_length=8)}
+        volume=MappedVolume(io.BytesIO(b'prefix'+bytes(range(32))),6,32,mappings,lambda offset,length:b'ABCD')
+        volume.seek(8);self.assertEqual(volume.read(8),bytes([8,9])+b'ABCD'+bytes([14,15]))
+        volume.seek(-2,2);self.assertEqual(volume.read(8),bytes([30,31]))
+        with self.assertRaises(ValueError):volume.read()
+
+    def test_fat_boot_mui_shared_original_name_is_explicit(self):
+        self.assertIn('bootmgr.exe',name_variants('bootmgfw.efi.mui'))
+        self.assertIn('memtest.exe',name_variants('memtest.efi.mui'))
+        self.assertNotIn('bootmgr.exe',name_variants('unrelated.efi.mui'))
+
+    def test_multiframe_hash_prefixes_match_full_digest(self):
+        data=bytearray(os.urandom(256));info=dict(algorithm='sha256',checksum_offset=16,security_offset=32,certificate_offset=240)
+        patches={0:[(64,96,12)],1:[(144,192,6)]};contents={'a':os.urandom(80),'b':os.urandom(80)};states={}
+        for assignment in (('a','b'),('b','a'),('a','a')):
+            full=data[:]
+            for base,sha in zip((0,1),assignment):patch(full,contents[sha],patches[base])
+            self.assertEqual(assignment_digest(data,info,[0,1],patches,assignment,contents,states),digest(full,info))
     def test_ese_checksum_microsoft_reference_vector(self):
         import struct
         data=bytearray((i+i//13)&255 for i in range(32768));pgno=0x98765431
