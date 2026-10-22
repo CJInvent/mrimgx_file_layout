@@ -10,6 +10,7 @@ import zstandard
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','manifest','evidence','mapping_directory','repair_exe','output'):ap.add_argument(name,type=pathlib.Path)
+    ap.add_argument('--reuse-negative-attempts',type=pathlib.Path,help='reuse completed exhaustive zero-match tests only when their original encoded input is byte-identical')
     a=ap.parse_args();a.output.mkdir(exist_ok=False);db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);maps=[] if str(a.mapping_directory)=='-' else json.loads((a.mapping_directory/'accepted-mappings.json').read_text());mapped={(m['partition'],m['disk_offset'],m['length']) for m in maps};reports=[];requests=[];before=a.source.stat();errors=[];data_end=json.loads((a.evidence/'coverage-summary.json').read_text())['data_region_end']
     targets=[row for row in map(json.loads,a.manifest.open()) if row.get('status')=='unrecoverable' and (row['partition'],row['disk_offset'],row['length']) not in mapped]
     # A temporary key table permits one sequential scan of a read-only
@@ -26,6 +27,13 @@ def main():
             source.seek(offset);raw=source.read(stored)
             if len(raw)!=stored:raise ValueError('source short read')
             if len(raw)<4 or sum((a^b).bit_count() for a,b in zip(raw[:4],bytes.fromhex('28b52ffd')))>1 or sum(bool(b) for b in md5)<12:report['skipped']='not a normal Zstd magic within one bit, or insufficient original digest bytes';continue
+            if a.reuse_negative_attempts:
+                old=a.reuse_negative_attempts/f'{partition}-{block}.log';old_input=a.reuse_negative_attempts/f'{partition}-{block}-original.bin'
+                try:
+                    cached=json.loads(old.read_text())
+                    if cached.get('status')=='no-unique-single-bit-repair' and cached.get('original_decoded_md5')==md5.hex() and cached.get('decoded_bytes')==length and cached.get('matches')==0 and cached.get('tested_bytes')==len(raw) and old_input.read_bytes()==raw:
+                        report.update(status='no-unique-single-bit-repair',reused_negative_log=str(old.resolve()),reused_log_sha256=hashlib.sha256(old.read_bytes()).hexdigest());print(json.dumps(dict(event='reused-complete-negative-test',**report)),flush=True);continue
+                except (OSError,ValueError):pass
             input_path=a.output/f'{partition}-{block}-original.bin';fixed=a.output/f'{partition}-{block}-repaired.bin'
             with input_path.open('xb') as out:out.write(raw)
             print(json.dumps(dict(event='bit-search-begin',**report)),flush=True)

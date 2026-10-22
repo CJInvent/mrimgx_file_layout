@@ -37,6 +37,13 @@ from recover_catalog_sequences import projected_multi_hash
 
 
 class ForensicTests(unittest.TestCase):
+    def test_negative_repair_resume_binds_original_input_digest_and_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);data=os.urandom(128);encoded=zstandard.ZstdCompressor().compress(data);source=root/'source';source.write_bytes(encoded);evidence=root/'evidence';evidence.mkdir();(evidence/'coverage-summary.json').write_text(json.dumps(dict(data_region_end=len(encoded))))
+            md5=hashlib.md5(data+b'original-index').hexdigest();db=sqlite3.connect(evidence/'catalog.sqlite');db.execute('CREATE TABLE entries(source_offset,stored_length,digest,decoded_length,partition,reserved,block,disk_offset)');db.execute('INSERT INTO entries VALUES(?,?,?,?,?,?,?,?)',(0,len(encoded),bytes.fromhex(md5),len(data),2,0,7,4096));db.commit();db.close();manifest=root/'manifest';manifest.write_text(json.dumps(dict(status='unrecoverable',partition=2,disk_offset=4096,length=len(data)))+'\n');old=root/'old';old.mkdir();(old/'2-7-original.bin').write_bytes(encoded);cache=dict(status='no-unique-single-bit-repair',matches=0,tested_bytes=len(encoded),original_decoded_md5='00'*16,decoded_bytes=len(data));log=old/'2-7.log';log.write_text(json.dumps(cache))
+            command=[sys.executable,str(pathlib.Path(__file__).with_name('recover_indexed_bit_frames.py')),str(source),str(manifest),str(evidence),'-',str(root/'missing-native.exe'),str(root/'rejected'),'--reuse-negative-attempts',str(old)];result=subprocess.run(command,capture_output=True,text=True);self.assertNotEqual(result.returncode,0)
+            cache['original_decoded_md5']=md5;log.write_text(json.dumps(cache));command[-3]=str(root/'accepted');result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(source.read_bytes(),encoded)
+
     def test_multiframe_catalog_hash_projection_and_exclusions(self):
         template=os.urandom(4096);contents={'first':os.urandom(2048),'second':os.urandom(2048)};bases=[1000,2000];pieces={1000:[(55,300,500),(900,2100,200)],2000:[(100,1100,700)]};assignment=('first','second')
         data=reconstruct(template,bases,pieces,assignment,contents)
@@ -384,6 +391,15 @@ class RefinementTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('FRAME_REPAIR_EXE'),'Native frame repair executable')
 class BitRepairTests(unittest.TestCase):
+    def test_raw_prefix_boundaries_and_compressed_header_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            cases=[(os.urandom(n),False) for n in (63,64,65,120,128,129,4096)]+[(b'compressible contents'*300,True)]
+            for number,(data,checksum) in enumerate(cases):
+                encoded=zstandard.ZstdCompressor(write_checksum=checksum).compress(data);corrupt=bytearray(encoded);offset=0 if checksum else len(encoded)-20;corrupt[offset]^=2;source=root/f'{number}.bin';source.write_bytes(corrupt);output=root/f'{number}-repaired.bin'
+                result=subprocess.run([os.environ['FRAME_REPAIR_EXE'],str(source),str(output),hashlib.md5(data).hexdigest(),str(len(data))],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertEqual(output.read_bytes(),encoded);self.assertEqual(source.read_bytes(),corrupt);info=json.loads(result.stdout);self.assertEqual(info['tested_bytes'],len(encoded));self.assertEqual(info['raw_prefix_optimization'],not checksum)
+
     def test_exact_md5_bit_repair_and_source_preservation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory);data=os.urandom(1024);encoded=zstandard.ZstdCompressor().compress(data)

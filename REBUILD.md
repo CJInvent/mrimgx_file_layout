@@ -37,6 +37,11 @@ stages run by default. `--bit-repair-exe` selects a different repair executable.
 Validated index repairs go only into the derived clone, before preparing its MFT;
 a separate analysis manifest makes those proven ranges available to later stages.
 The original baseline manifest remains the write/preservation authority.
+Raw Zstd blocks reuse MD5 prefix states while still testing every encoded bit;
+header, compressed-block and checksum cases retain full decoder checks. The
+standalone bit-repair tool accepts `--reuse-negative-attempts DIRECTORY` only
+when a completed zero-match result records the same original MD5, decoded
+length, exhaustive encoded-byte count, and byte-identical original encoded input.
 
 The default stages include original/partial index hashes, NTFS directory VCNs
 and fixups, Chromium key identities, Appx hashes, cabinet checksums and complete
