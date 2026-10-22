@@ -15,6 +15,7 @@ import uuid
 import zstandard
 from safe_vhdx import VHDX
 from dissect.util.hash.crc32c import crc32c
+from placement_payload import payload
 
 
 def checksum_block(raw, signature):
@@ -30,6 +31,7 @@ def main():
     for name in ('source','baseline','clone','clone_manifest','baseline_manifest','mappings','output_manifest'):
         ap.add_argument(name,type=pathlib.Path)
     ap.add_argument('--previous-refinement',type=pathlib.Path)
+    ap.add_argument('--supplemental',type=pathlib.Path,help='independently validated file slices/bit repairs, kept separate from full-frame mappings')
     a=ap.parse_args()
     paths=[a.source.resolve(),a.baseline.resolve(),a.clone.resolve()]
     if len(set(paths))!=3:raise ValueError('source, baseline and clone must differ')
@@ -51,31 +53,47 @@ def main():
         j=json.loads(line)
         if j.get('operation')=='range' and j.get('status') in ('unknown-zero-index','unrecoverable'):
             absent.setdefault(j['partition'],[]).append((j['disk_offset'],j['disk_offset']+j['length']))
-    mappings=json.loads(a.mappings.read_text());intervals=[]
-    for m in mappings:
+    mappings=json.loads(a.mappings.read_text());intervals=[];supplements={}
+    for row in previous:
+        if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
+    if a.supplemental:
+        for m in json.loads(a.supplemental.read_text()):
+            key=(m['disk_offset'],m['length'])
+            if key in supplements and supplements[key]['sha256']!=m['sha256']:raise ValueError('supplement contradicts a previous verified slice')
+            supplements.setdefault(key,m)
+    supplements=list(supplements.values());all_requests=mappings+supplements
+    for index,m in enumerate(all_requests):
         start=m['disk_offset'];end=start+m['length']
         if not any(lo<=start and end<=hi for lo,hi in absent.get(m['partition'],[])):raise ValueError('mapping would replace available baseline data')
-        intervals.append((start,end))
+        if index<len(mappings):intervals.append((start,end))
     intervals.sort()
     if any(end>nstart for (_,end),(nstart,_) in zip(intervals,intervals[1:])):raise ValueError('overlapping mappings')
     baseline=VHDX(a.baseline); clone=VHDX(a.clone)
     if baseline.size!=clone.size or clone.has_parent or clone.block_size!=2*1024**2 or clone.sector_size!=512:
         raise ValueError('unsupported or mismatched VHDX geometry')
     already={row['disk_offset']:row for row in previous if row.get('operation')=='placed'}
+    old_supplements={(row['disk_offset'],row['length']):row for row in previous if row.get('operation')=='placed-supplement'}
     requested={m['disk_offset']:m for m in mappings}
     for position,m in already.items():
         if position not in requested or requested[position]['sha256']!=m['sha256'] or requested[position]['length']!=m['length']:raise ValueError('new mappings contradict previous refinement')
         clone.seek(position)
         if hashlib.sha256(clone.read(m['length'])).hexdigest()!=m['sha256']:raise ValueError('previous placement changed')
+    for (position,length),m in old_supplements.items():
+        clone.seek(position)
+        if hashlib.sha256(clone.read(length)).hexdigest()!=m['sha256']:raise ValueError('previous verified file slice changed')
     # Validate every target before the first mutation. Incomplete source or a
     # contradictory baseline must never leave a partially refined output.
     with a.source.open('rb') as preflight:
-        for m in mappings:
+        for m in all_requests:
             baseline.seek(m['disk_offset'])
             if any(baseline.read(m['length'])):raise ValueError('unresolved baseline range contains unexpected nonzero bytes')
-            preflight.seek(m['source_offset']);raw=preflight.read(m['stored_length'])
-            decoder=zstandard.ZstdDecompressor().decompressobj();data=decoder.decompress(raw)
-            if not decoder.eof or decoder.unused_data or len(data)!=m['length'] or hashlib.md5(data).hexdigest()!=m['decoded_md5'] or hashlib.sha256(data).hexdigest()!=m['sha256']:raise ValueError('source frame preflight failed')
+            data=payload(preflight,m)
+        # Overlapping requests are permitted only for identical validated
+        # bytes. Thus a later full frame can cover an earlier proven slice.
+        for i,m in enumerate(supplements):
+            for n in mappings+supplements[:i]:
+                lo=max(m['disk_offset'],n['disk_offset']);hi=min(m['disk_offset']+m['length'],n['disk_offset']+n['length'])
+                if hi>lo and payload(preflight,m)[lo-m['disk_offset']:hi-m['disk_offset']]!=payload(preflight,n)[lo-n['disk_offset']:hi-n['disk_offset']]:raise ValueError('conflicting verified source slices')
     bat_offset=clone.bat.offset;count=clone.bat.entry_count;blocksize=clone.block_size;ratio=clone._chunk_ratio
     # Snapshot metadata before opening the clone for writes; close parser file
     # handles so buffered reads can never hide modified payload data.
@@ -104,13 +122,12 @@ def main():
         begin=dict(operation='begin',baseline=str(a.baseline.resolve()),clone=str(a.clone.resolve()),mappings=len(mappings))
         if a.previous_refinement:begin['previous_refinement_sha256']=hashlib.sha256(a.previous_refinement.read_bytes()).hexdigest()
         log.write(json.dumps(begin)+'\n');log.flush()
-        for m in mappings:
-            if m['disk_offset'] in already:
-                log.write(json.dumps(dict(operation='placed',**m))+'\n');continue
-            src.seek(m['source_offset']);encoded=src.read(m['stored_length'])
-            decoder=zstandard.ZstdDecompressor().decompressobj();data=decoder.decompress(encoded)
-            if not decoder.eof or decoder.unused_data or len(data)!=m['length'] or hashlib.md5(data).hexdigest()!=m['decoded_md5'] or hashlib.sha256(data).hexdigest()!=m['sha256']:
-                raise ValueError('source frame revalidation failed')
+        for index,m in enumerate(all_requests):
+            supplemental=index>=len(mappings);operation='placed-supplement' if supplemental else 'placed'
+            previously_placed=(m['disk_offset'],m['length']) in old_supplements if supplemental else m['disk_offset'] in already
+            if previously_placed:
+                log.write(json.dumps(dict(operation=operation,**m))+'\n');continue
+            data=payload(src,m)
             position=m['disk_offset'];remaining=data
             baseline.seek(position)
             if any(baseline.read(len(data))):raise ValueError('unresolved baseline range contains unexpected nonzero bytes')
@@ -123,18 +140,18 @@ def main():
                     write(offset,bytes(blocksize));entry=offset|6;bat[slot]=entry;write(bat_offset+slot*8,struct.pack('<Q',entry))
                 n=min(len(remaining),blocksize-within)
                 write((entry&0xfffffffffff00000)+within,remaining[:n]);position+=n;remaining=remaining[n:]
-            log.write(json.dumps(dict(operation='placed',**m))+'\n')
+            log.write(json.dumps(dict(operation=operation,**m))+'\n')
         dst.flush();os.fsync(dst.fileno())
         for p,expected in state.items():
             if (p.stat().st_size,p.stat().st_mtime_ns)!=expected:raise ValueError('protected input changed')
-        log.write(json.dumps(dict(operation='complete',placed_bytes=sum(m['length'] for m in mappings),protected_input_stats_unchanged=True,physical_mutations=mutations))+'\n')
+        log.write(json.dumps(dict(operation='complete',placed_bytes=sum(m['length'] for m in mappings),supplemental_bytes=sum(m['length'] for m in supplements),supplemental_destinations=len(supplements),protected_input_stats_unchanged=True,physical_mutations=mutations))+'\n')
     baseline.fh.close()
     # Reopen through an independent reader, checking every new destination.
     result=VHDX(a.clone)
-    for m in mappings:
+    for m in all_requests:
         result.seek(m['disk_offset']);data=result.read(m['length'])
         if hashlib.sha256(data).hexdigest()!=m['sha256']:raise ValueError('independent VHDX readback failed')
-    print(json.dumps(dict(placed_destinations=len(mappings),placed_bytes=sum(m['length'] for m in mappings),independent_readback=True)),flush=True)
+    print(json.dumps(dict(placed_destinations=len(mappings),placed_bytes=sum(m['length'] for m in mappings),supplemental_destinations=len(supplements),supplemental_bytes=sum(m['length'] for m in supplements),independent_readback=True)),flush=True)
 
 
 if __name__=='__main__':main()

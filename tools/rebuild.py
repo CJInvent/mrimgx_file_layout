@@ -4,12 +4,12 @@ Never launches a recovered program or writes to the source/baseline/evidence.
 Native strict conversion remains the default. All stages use the same reusable
 methods as interactive forensic work, with machine-readable logs and failures.
 """
-import argparse,hashlib,json,os,pathlib,subprocess,sys,time
+import argparse,hashlib,json,os,pathlib,shutil,subprocess,sys,time
 from make_recovery_plan import make_plan
 from forensic_residuals import root_layout
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='appx,cab,signed-pe,structured,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,installer-hashes,catalog-hashes'
+DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,catalog-hashes'
 
 
 def corrupted(manifest):
@@ -36,6 +36,7 @@ def main():
     ap.add_argument('source',type=pathlib.Path);ap.add_argument('--plan',type=pathlib.Path,help='optional existing fingerprinted plan; otherwise discover corroborated index arrays and boot frames')
     ap.add_argument('--output',type=pathlib.Path,required=True);ap.add_argument('--native',type=pathlib.Path);ap.add_argument('--baseline',type=pathlib.Path);ap.add_argument('--manifest',type=pathlib.Path);ap.add_argument('--evidence',type=pathlib.Path);ap.add_argument('--mft',type=pathlib.Path);ap.add_argument('--inventory',type=pathlib.Path);ap.add_argument('--mapping-directory',type=pathlib.Path)
     ap.add_argument('--qemu-img',type=pathlib.Path,required=True);ap.add_argument('--seven-zip',type=pathlib.Path,required=True)
+    ap.add_argument('--bit-repair-exe',type=pathlib.Path,help='defaults to repair_frame_bits.exe next to the native converter')
     ap.add_argument('--stages',default=DEFAULT_STAGES);ap.add_argument('--rounds',type=int,default=0,help='0 repeats until no new placements; a bound is reported as a limit')
     ap.add_argument('--per-file-budget',type=int,default=300000);ap.add_argument('--metadata-identity',action='store_true',help='also permit separately labeled filename/size/exact-time duplicate inferences')
     ap.add_argument('--existing-clone',type=pathlib.Path);ap.add_argument('--clone-manifest',type=pathlib.Path);ap.add_argument('--previous-refinement',type=pathlib.Path);ap.add_argument('--previous-validation',type=pathlib.Path)
@@ -68,12 +69,43 @@ def main():
     evidence=a.evidence
     if evidence is None:evidence=runner.call('forensic_residuals',[a.source,a.plan,manifest,a.output/'evidence'],a.output/'evidence')
     elif json.loads((evidence/'input-plan.json').read_text())!=plan:raise ValueError('evidence belongs to another plan')
+    original_baseline=baseline;original_manifest=manifest;revised=a.existing_clone or a.output/'rebuilt.vhdx';copylog=a.clone_manifest or a.output/'clone-manifest.jsonl';active_previous=a.previous_refinement;clone_ready=bool(a.existing_clone);errors=[];bit_output=None;audit_output=None
+    if 'residual-audit' in requested:
+        audit_output=a.output/'residual-audit'
+        try:runner.call('inspect_residual_failures',[evidence,audit_output])
+        except Exception as e:errors.append(dict(tool='residual-audit',error=str(e)))
+    if 'bit-repair' in requested:
+        bit_output=a.output/'indexed-bit-repair';repair_exe=a.bit_repair_exe or ((a.native.parent if a.native else TOOLS.parent/'build')/'repair_frame_bits.exe')
+        try:
+            if not repair_exe.is_file():raise ValueError('bit-repair executable unavailable')
+            runner.call('recover_indexed_bit_frames',[a.source,manifest,evidence,a.mapping_directory or '-',repair_exe,bit_output])
+            repairs=json.loads((bit_output/'supplemental-placements.json').read_text())
+            if repairs and not a.search_only:
+                # Original-index repairs can be checked before an NTFS parser
+                # is usable; never apply an unvalidated metadata repair.
+                runner.call('validate_supplemental_files',[a.source,original_baseline,a.mft or '-',original_manifest,evidence,a.mapping_directory or '-',bit_output/'supplemental-placements.json',a.output/'indexed-bit-validation'])
+                if not clone_ready:runner.call('clone_sparse_file',[original_baseline,revised,copylog]);clone_ready=True
+                empty=a.output/'empty-mappings.json';empty.write_text('[]');early=a.output/'metadata-repair-refinement.jsonl';args=[a.source,original_baseline,revised,copylog,manifest,(a.mapping_directory/'accepted-mappings.json') if a.mapping_directory else empty,early,'--supplemental',bit_output/'supplemental-placements.json']
+                if active_previous:args+=['--previous-refinement',active_previous]
+                runner.call('refine_vhdx',args);active_previous=early;baseline=revised
+                # A separate analysis manifest makes the proven original
+                # frame readable to every later stage. The original manifest
+                # remains the authority for write restrictions/preservation.
+                repaired={(m['partition'],m['disk_offset'],m['length']) for m in repairs}
+                analysis_manifest=a.output/'analysis-manifest.jsonl'
+                with original_manifest.open() as inp,analysis_manifest.open('x') as out:
+                    for line in inp:
+                        row=json.loads(line)
+                        if row.get('operation')=='range' and (row.get('partition'),row.get('disk_offset'),row.get('length')) in repaired:row['status']='recovered-original-index-bit-repair'
+                        out.write(json.dumps(row)+'\n')
+                manifest=analysis_manifest
+        except Exception as e:errors.append(dict(tool='bit-repair',error=str(e)))
     mft=a.mft;inventory=a.inventory
     if mft is None:
         prep=a.output/'filesystem';runner.call('prepare_rebuild',[baseline,manifest,evidence/'layout.json',prep]);mft=prep/'mft.bin';inventory=prep/'affected-files.jsonl'
     current=a.mapping_directory
     if current is None:current=runner.call('map_orphan_frames',[a.source,a.plan,manifest,evidence,baseline,mft,a.output/'initial-mapping','--file-inventory',inventory,'--pe-anchors','--appx-anchors'],a.output/'initial-mapping')
-    initial=current;errors=[];round_number=0;fixed_point=False
+    initial=current;round_number=0;fixed_point=False
     def maps(path):return json.loads((path/'accepted-mappings.json').read_text())
     def stage(tool,args):
         nonlocal current
@@ -86,10 +118,10 @@ def main():
     while not a.rounds or round_number<a.rounds:
         before=len(maps(current));round_number+=1;print(json.dumps(dict(round=round_number,mappings=before)),flush=True)
         for name in DEFAULT_STAGES.split(','):
-            if name not in requested:continue
+            if name not in requested or name in ('residual-audit','bit-repair'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
-            if name in ('appx','signed-pe','structured','pdf','wal','ese','png'):
-                tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
+            if name in ('appx','signed-pe','structured','pdf','wal','ese','png','chromium-streams'):
+                tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings','chromium-streams':'recover_chromium_streams'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
                 args=common
                 # Output positional precedes options; stage accepts option
                 # arguments only through explicit helper below.
@@ -122,6 +154,7 @@ def main():
                         out=a.output/f'{runner.serial+1:04d}-chakra';runner.call('recover_chakra_offsets',[a.source,baseline,mft,manifest,evidence,current,out,'--record',row['record']]);current=out
                     except Exception as e:
                         if 'header' in locals() and header[:4]==b'ChBc':errors.append(dict(tool='chakra',record=row['record'],error=str(e)))
+                ctx.close()
             elif name in ('fat-directories','fat-signed-pe','fat-joint-pe','ntfs-joint-pe'):
                 tool={'fat-directories':'recover_fat_directories','fat-signed-pe':'recover_fat_signed_pe','fat-joint-pe':'recover_fat_multiframe_pe','ntfs-joint-pe':'recover_fat_multiframe_pe'}[name]
                 if name=='ntfs-joint-pe':
@@ -142,16 +175,29 @@ def main():
                 try:
                     runner.call('collect_catalog_hashes',[a.source,baseline,mft,manifest,evidence,current,collected])
                     stage('recover_catalog_files',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl'])
+                    out=a.output/f'{runner.serial+1:04d}-recover_catalog_sequences'
+                    runner.call('recover_catalog_sequences',[a.source,baseline,mft,inventory,manifest,evidence,current,collected/'catalog-members.jsonl',out,'--per-file-budget',a.per_file_budget])
                 except Exception as e:errors.append(dict(tool=name,error=str(e)))
         if len(maps(current))==before:fixed_point=True;break
     validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated]);current=validated
-    revised=None
+    supplements={}
+    if a.previous_refinement:
+        for row in map(json.loads,a.previous_refinement.open()):
+            if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
+    paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))
+    if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
+    for path in paths:
+        for m in json.loads(path.read_text()):
+            key=(m['disk_offset'],m['length'])
+            if key in supplements and supplements[key]['sha256']!=m['sha256']:raise ValueError('conflicting independently validated file slices')
+            supplements.setdefault(key,m)
+    supplemental=a.output/'supplemental-placements.json';supplemental.write_text(json.dumps(list(supplements.values()),indent=2))
+    if supplements:runner.call('validate_supplemental_files',[a.source,baseline,mft,manifest,evidence,current,supplemental,a.output/'supplemental-validation'])
     if not a.search_only:
-        revised=a.existing_clone or a.output/'rebuilt.vhdx';copylog=a.clone_manifest or a.output/'clone-manifest.jsonl'
-        if not a.existing_clone:runner.call('clone_sparse_file',[baseline,revised,copylog])
-        journal=a.output/'refinement-manifest.jsonl';args=[a.source,baseline,revised,copylog,manifest,current/'accepted-mappings.json',journal]
-        if a.previous_refinement:args+=['--previous-refinement',a.previous_refinement]
-        runner.call('refine_vhdx',args);args=[baseline,revised,copylog,journal,a.output/'baseline-preservation.json']
+        if not clone_ready:runner.call('clone_sparse_file',[original_baseline,revised,copylog])
+        journal=a.output/'refinement-manifest.jsonl';args=[a.source,original_baseline,revised,copylog,original_manifest,current/'accepted-mappings.json',journal,'--supplemental',supplemental]
+        if active_previous:args+=['--previous-refinement',active_previous]
+        runner.call('refine_vhdx',args);args=[original_baseline,revised,copylog,journal,a.output/'baseline-preservation.json']
         if a.previous_refinement:args+=['--previous-refinement',a.previous_refinement,'--previous-validation',a.previous_validation]
         runner.call('verify_refined_clone',args)
         check=subprocess.run([str(a.qemu_img),'check',str(revised)],capture_output=True,text=True);(a.output/'qemu-check.txt').write_text(check.stdout+check.stderr)
@@ -159,10 +205,22 @@ def main():
     runner.call('export_unresolved',[evidence,current/'accepted-mappings.json',a.output/'decoded-residual'])
     runner.call('refinement_coverage',[a.source,evidence,current/'accepted-mappings.json',a.output/'encoded-residual'])
     runner.call('rescue_unplaced_files',[evidence,current/'accepted-mappings.json',a.output/'recovered_files'])
+    shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')
+    if audit_output and (audit_output/'partial-decoded.bin').exists():
+        target=a.output/'recovered_files/incomplete-decoding';target.mkdir();shutil.copy2(audit_output/'partial-decoded.bin',target/'partial-decoded.bin');shutil.copy2(audit_output/'summary.json',target/'partial-decoded.bin.json')
+    if bit_output:
+        target=a.output/'recovered_files/indexed-bit-repair';target.mkdir()
+        for item in bit_output.glob('*-decoded.bin*'):shutil.copy2(item,target/item.name)
+        if (bit_output/'summary.json').exists():shutil.copy2(bit_output/'summary.json',target/'summary.json')
+    candidates=a.output/'recovered_files/candidates'
+    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))):
+        target=candidates/directory.parent.name;target.mkdir(parents=True,exist_ok=False)
+        for item in directory.iterdir():
+            if item.is_file():shutil.copy2(item,target/item.name)
     runner.call('enrich_recovered_metadata',[a.output/'recovered_files',baseline,mft,inventory,evidence/'layout.json'])
     for path in protected:
         if (path.stat().st_size,path.stat().st_mtime_ns)!=stats[str(path.resolve())]:raise ValueError('protected input changed')
-    summary=dict(schema_version=1,corruption_detected=True,vhdx=str(revised.resolve()) if revised else None,search_only=a.search_only,accepted_mappings=len(maps(current)),mapping_directory=str(current.resolve()),recovered_files=str((a.output/'recovered_files').resolve()),rounds=round_number,no_additions_in_last_round=fixed_point,all_requested_stages_succeeded=not errors,stage_errors=errors,enabled_stages=sorted(requested),excluded_stages=sorted(set(DEFAULT_STAGES.split(','))-requested),protected_input_stats_unchanged=True,limits=dict(per_file_budget=a.per_file_budget,rounds=a.rounds,metadata_identity=a.metadata_identity),scope='Unresolved placements are exported separately. Convergence means no further additions from the implemented bounded searches, never universal unmappability or a complete/bootable filesystem.')
+    summary=dict(schema_version=1,corruption_detected=True,vhdx=str(revised.resolve()) if not a.search_only else None,search_only=a.search_only,accepted_mappings=len(maps(current)),supplemental_destinations=len(supplements),supplemental_bytes=sum(m['length'] for m in supplements.values()),mapping_directory=str(current.resolve()),recovered_files=str((a.output/'recovered_files').resolve()),rounds=round_number,no_additions_in_last_round=fixed_point,all_requested_stages_succeeded=not errors,stage_errors=errors,enabled_stages=sorted(requested),excluded_stages=sorted(set(DEFAULT_STAGES.split(','))-requested),protected_input_stats_unchanged=True,limits=dict(per_file_budget=a.per_file_budget,rounds=a.rounds,metadata_identity=a.metadata_identity),scope='Unresolved placements are exported separately. Full-frame residual accounting retains complete enclosing frames for partial validated slices, whose known disk ranges are listed separately. Convergence means no further additions from the implemented bounded searches, never universal unmappability or a complete/bootable filesystem.')
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary,indent=2),flush=True);return 2
 
 

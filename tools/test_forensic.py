@@ -31,9 +31,53 @@ from recover_png_crc_grid import validate_png,first_idat
 from recover_file_hashes import reconstruct,distinctive_hash_bound
 from rescue_unplaced_files import carved_files,export as rescue_export
 from recover_catalog_files import projected_hash
+from recover_chromium_streams import layout as cache_layout,validate as cache_validate,extra_validation as cache_extra,INITIAL,FINAL
+from placement_payload import payload as placement_payload
+from recover_catalog_sequences import projected_multi_hash
 
 
 class ForensicTests(unittest.TestCase):
+    def test_multiframe_catalog_hash_projection_and_exclusions(self):
+        template=os.urandom(4096);contents={'first':os.urandom(2048),'second':os.urandom(2048)};bases=[1000,2000];pieces={1000:[(55,300,500),(900,2100,200)],2000:[(100,1100,700)]};assignment=('first','second')
+        data=reconstruct(template,bases,pieces,assignment,contents)
+        for regions in ([(0,4096)],[(0,400),(408,1200),(1232,3500)]):
+            for algorithm in ('sha1','sha256'):
+                h=hashlib.new(algorithm)
+                for lo,hi in regions:h.update(data[lo:hi])
+                self.assertEqual(projected_multi_hash(template,regions,bases,pieces,algorithm)(assignment,contents),h.hexdigest())
+
+    def test_original_index_repair_validation_without_readable_filesystem(self):
+        # A boot/MFT repair must be checked before filesystem construction;
+        # also reject a repair whose digest is absent from the original index.
+        data=os.urandom(4096);encoded=zstandard.ZstdCompressor().compress(data);corrupt=bytearray(encoded);corrupt[-80]^=2
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);source=root/'source.bin';source.write_bytes(corrupt);fixed=root/'fixed.bin';fixed.write_bytes(encoded);evidence=root/'evidence';evidence.mkdir()
+            db=sqlite3.connect(evidence/'catalog.sqlite');db.execute('CREATE TABLE entries(source_offset,stored_length,digest,decoded_length,partition,block,disk_offset)');md5=hashlib.md5(data).hexdigest();db.execute('INSERT INTO entries VALUES(?,?,?,?,?,?,?)',(0,len(encoded),bytes.fromhex(md5),len(data),2,7,4096));db.commit();db.close()
+            request=dict(partition=2,disk_offset=4096,length=len(data),source_offset=0,stored_length=len(encoded),decoded_md5=md5,sha256=hashlib.sha256(data).hexdigest(),encoded_bit_repair=dict(encoded_path=str(fixed),original_encoded_sha256=hashlib.sha256(corrupt).hexdigest(),repaired_encoded_sha256=hashlib.sha256(encoded).hexdigest()),evidence=[dict(method='unique-original-index-md5-bit-repair',original_md5=md5,block=7)])
+            requests=root/'requests.json';requests.write_text(json.dumps([request]));command=[sys.executable,str(pathlib.Path(__file__).with_name('validate_supplemental_files.py')),str(source),'-','-','-',str(evidence),'-',str(requests),str(root/'valid')]
+            result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            db=sqlite3.connect(evidence/'catalog.sqlite');db.execute('UPDATE entries SET digest=?',(bytes(16),));db.commit();db.close();command[-1]=str(root/'invalid');result=subprocess.run(command,capture_output=True,text=True);self.assertNotEqual(result.returncode,0);self.assertEqual(source.read_bytes(),corrupt)
+
+    def test_verified_slice_and_one_bit_view_never_edit_encoded_source(self):
+        data=os.urandom(4096);encoded=zstandard.ZstdCompressor().compress(data);corrupt=bytearray(encoded);corrupt[-100]^=4
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);source=root/'original.bin';source.write_bytes(corrupt);fixed=root/'derivative.bin';fixed.write_bytes(encoded);part=data[300:900]
+            m=dict(source_offset=0,stored_length=len(encoded),length=len(part),decoded_slice_offset=300,source_decoded_length=len(data),source_decoded_md5=hashlib.md5(data).hexdigest(),source_decoded_sha256=hashlib.sha256(data).hexdigest(),decoded_md5=hashlib.md5(part).hexdigest(),sha256=hashlib.sha256(part).hexdigest(),encoded_bit_repair=dict(encoded_path=str(fixed),original_encoded_sha256=hashlib.sha256(corrupt).hexdigest(),repaired_encoded_sha256=hashlib.sha256(encoded).hexdigest()))
+            with source.open('rb') as reader:self.assertEqual(placement_payload(reader,m),part)
+            self.assertEqual(source.read_bytes(),corrupt)
+            bad=bytearray(encoded);bad[-101]^=8;fixed.write_bytes(bad);m['encoded_bit_repair']['repaired_encoded_sha256']=hashlib.sha256(bad).hexdigest()
+            with source.open('rb') as reader,self.assertRaises(ValueError):placement_payload(reader,m)
+    def test_chromium_original_key_bounds_crcs_and_nested_gzip(self):
+        import struct
+        key=b'https://example.test/asset';name=f'{int.from_bytes(hashlib.sha1(key).digest()[:8],"little"):016x}_0';compress=zlib.compressobj(wbits=31);body=compress.compress(os.urandom(65536))+compress.flush();metadata=b'HTTP/1.1 200 OK\0Content-Encoding: gzip\0'
+        header=struct.pack('<Q4I',INITIAL,5,len(key),0,0)+key
+        footer1=struct.pack('<Q4I',FINAL,1,zlib.crc32(body),0,0);footer0=struct.pack('<Q4I',FINAL,3,zlib.crc32(metadata),len(metadata),0)
+        data=header+body+footer1+metadata+hashlib.sha256(key).digest()+footer0;info=cache_layout(data,name);cache_validate(data,info)
+        lo=len(header)+100;hi=len(header)+len(body)-100;known=lambda start,stop:not(start<hi and stop>lo);self.assertEqual(cache_layout(data,name,known),info);self.assertTrue(cache_extra(data,info,data,known))
+        wrong=bytearray(data);wrong[len(header)+200]^=1
+        with self.assertRaises(ValueError):cache_validate(wrong,info)
+        with self.assertRaises(ValueError):cache_layout(data,'0'*16+'_0')
+        with self.assertRaises(ValueError):cache_layout(data[:-10],name)
     def test_jpeg_rescue_decodes_without_authorizing_placement(self):
         import io
         from PIL import Image
@@ -320,6 +364,17 @@ class RefinementTests(unittest.TestCase):
             self.assertEqual(checked.returncode,0,checked.stdout+checked.stderr)
             full=json.loads((root/'full-validation.json').read_text());incremental=json.loads((root/'delta-validation.json').read_text())
             self.assertEqual(full['verified_allocated_clone_bytes'],incremental['verified_allocated_clone_bytes'])
+            # Preserve a hash-validated subset without copying other bytes
+            # from its enclosing source frame, then upgrade with agreeing data.
+            slice_offset=1000;slice_data=second_data[slice_offset:slice_offset+4096];slice_at=5*1024**2+8192
+            supplement=dict(partition=0,disk_offset=slice_at,length=len(slice_data),source_offset=len(encoded),stored_length=len(second_encoded),source_decoded_length=len(second_data),source_decoded_md5=second['decoded_md5'],source_decoded_sha256=second['sha256'],decoded_slice_offset=slice_offset,decoded_md5=hashlib.md5(slice_data).hexdigest(),sha256=hashlib.sha256(slice_data).hexdigest())
+            slices=root/'slices.json';slices.write_text(json.dumps([supplement]));third=command[:];third[-1]=str(root/'refinement3.jsonl');third+=['--previous-refinement',str(root/'refinement2.jsonl'),'--supplemental',str(slices)]
+            result=subprocess.run(third,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr);expected[slice_at:slice_at+len(slice_data)]=slice_data
+            v=VHDX(target);self.assertEqual(v.read(len(expected)),bytes(expected));v.fh.close()
+            upgrade=dict(second,block=2,disk_offset=slice_at-slice_offset);mappings.write_text(json.dumps([mapping,second,dict(mapping,block=2,disk_offset=upgrade['disk_offset'])]));fourth=command[:];fourth[-1]=str(root/'conflicting-upgrade.jsonl');fourth+=['--previous-refinement',str(root/'refinement3.jsonl')];before=hashlib.sha256(target.read_bytes()).digest();rejected=subprocess.run(fourth,capture_output=True,text=True);self.assertNotEqual(rejected.returncode,0);self.assertEqual(hashlib.sha256(target.read_bytes()).digest(),before)
+            mappings.write_text(json.dumps([mapping,second,upgrade]));fourth[-3]=str(root/'refinement4.jsonl');result=subprocess.run(fourth,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr);expected[upgrade['disk_offset']:upgrade['disk_offset']+len(second_data)]=second_data
+            v=VHDX(target);self.assertEqual(v.read(len(expected)),bytes(expected));v.fh.close()
+            final_check=verify_command[:];final_check[-2]=str(root/'refinement4.jsonl');final_check[-1]=str(root/'final-preservation.json');checked=subprocess.run(final_check,capture_output=True,text=True);self.assertEqual(checked.returncode,0,checked.stdout+checked.stderr)
             # Guard against replacing known data: rejection happens before writes.
             bad=dict(mapping,disk_offset=0);mappings.write_text(json.dumps([bad]));before=hashlib.sha256(target.read_bytes()).digest()
             command[-1]=str(root/'rejected.jsonl');reject=subprocess.run(command,capture_output=True,text=True)

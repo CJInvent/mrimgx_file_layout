@@ -61,7 +61,7 @@ def projected_hash(template,regions,patches,algorithm):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','inventory','baseline_manifest','evidence','mapping_directory','catalog_members','output'):ap.add_argument(name,type=pathlib.Path)
-    ap.add_argument('--maximum-file-size',type=int,default=4*1024**2);a=ap.parse_args();a.output.mkdir(exist_ok=False);ctx=Context(a.source,a.baseline,a.mft,a.baseline_manifest,a.evidence,a.mapping_directory);accepted=ctx.maps[:];previous=len(accepted);plan=json.loads((a.mapping_directory/'recovery-plan.json').read_text());catalogs=collections.defaultdict(dict);algorithms={'1.3.14.3.2.26':'sha1','2.16.840.1.101.3.4.2.1':'sha256'}
+    ap.add_argument('--maximum-file-size',type=int,default=4*1024**2);ap.add_argument('--only-record',type=int);a=ap.parse_args();a.output.mkdir(exist_ok=False);ctx=Context(a.source,a.baseline,a.mft,a.baseline_manifest,a.evidence,a.mapping_directory);accepted=ctx.maps[:];previous=len(accepted);plan=json.loads((a.mapping_directory/'recovery-plan.json').read_text());catalogs=collections.defaultdict(dict);algorithms={'1.3.14.3.2.26':'sha1','2.16.840.1.101.3.4.2.1':'sha256'}
     for row in map(json.loads,a.catalog_members.open()):
         kind={'1.3.6.1.4.1.311.2.1.15':'pe','1.3.6.1.4.1.311.2.1.25':'flat'}.get(row.get('subject_oid'));algorithm=algorithms.get(row.get('algorithm_oid'))
         if not kind or not algorithm or not row.get('signature_hash_verified'):continue
@@ -75,8 +75,9 @@ def main():
                 corpus.seek(f[3]);data=corpus.read(ctx.stride)
                 if hashlib.sha256(data).hexdigest()!=f[6]:raise ValueError('corpus mismatch')
                 contents[f[6]]=data
-    pending=collections.defaultdict(list);reports=[]
+    pending=collections.defaultdict(list);reports=[];supplemental=[]
     for row in map(json.loads,a.inventory.open()):
+        if a.only_record is not None and row['record']!=a.only_record:continue
         try:
             record=ctx.fs.mft.get(row['record']);size=record.size()
             if not 32768<size<=a.maximum_file_size:continue
@@ -101,6 +102,20 @@ def main():
                 alternatives=[s for s,data in contents.items() if all(data[off:off+n]==contents[sha][off:off+n] for off,logical,n in pieces[base])]
                 if not distinctive_hash_bound(parts) or len(alternatives)!=1:report['rejected']='insufficient distinctive bytes or ambiguous full-frame boundary'
                 else:pending[base].append((sha,dict(method='signed-catalog-file-completion',record=row['record'],file_size=size,hash_kind=kind,algorithm=algorithm,expected_digest=expected,catalog=proof,known_file_bytes=len(known),signature_hash_verified=True,historical_component_version_binding=False)))
+            if solutions and (report.get('rejected') or len({sha for sha,alg,digest,proof in solutions})>1):
+                # Restore only file bytes when the enclosing frame cannot be
+                # placed. All successful reconstructions must agree on one
+                # digest and every byte in each proposed hashed slice.
+                if len({(alg,digest) for sha,alg,digest,proof in solutions})==1:
+                    sha,algorithm,expected,proof=solutions[0];f=frames[sha][0]
+                    for off,logical,n in pieces[base]:
+                        for lo,hi in regions:
+                            start=max(logical,lo);stop=min(logical+n,hi)
+                            if stop<=start:continue
+                            slice_off=off+start-logical;part=contents[sha][slice_off:slice_off+stop-start]
+                            if any(contents[s][slice_off:slice_off+len(part)]!=part for s,alg,digest,p in solutions):continue
+                            supplemental.append(dict(partition=2,disk_offset=ctx.origin+base+slice_off,length=len(part),source_offset=f[1],stored_length=f[2],source_decoded_length=ctx.stride,source_decoded_md5=f[5].hex(),source_decoded_sha256=sha,decoded_slice_offset=slice_off,decoded_md5=hashlib.md5(part).hexdigest(),sha256=hashlib.sha256(part).hexdigest(),evidence=[dict(method='catalog-validated-file-slice',record=row['record'],path=row.get('path'),file_size=size,file_logical_offset=start,hash_kind=kind,algorithm=algorithm,expected_digest=expected,catalog=proof,signature_hash_verified=True,historical_component_version_binding=False,enclosing_frame_placement_authorized=False)]))
+                    report['supplemental_file_slices']=len([m for m in supplemental if m['evidence'][0]['record']==row['record']])
             print(json.dumps(report),flush=True)
         except Exception:continue
     conflicts=[]
@@ -109,7 +124,7 @@ def main():
         sha=items[0][0];f=frames[sha][0];data=ctx.decode(f[1],f[2])
         if len(data)!=ctx.stride or hashlib.sha256(data).hexdigest()!=sha or hashlib.md5(data).digest()!=f[5]:raise ValueError('source mismatch')
         accepted.append(dict(partition=2,reserved=False,block=base//ctx.stride,disk_offset=ctx.origin+base,length=ctx.stride,source_offset=f[1],stored_length=f[2],decoded_md5=f[5].hex(),sha256=sha,frames=[x[0] for x in frames[sha]],evidence=[e for s,e in items]));plan['partitions'][2].setdefault('overrides',{})[str(base//ctx.stride)]=dict(source_offset=f[1],stored_length=f[2],decoded_md5=f[5].hex(),reason='Surviving original file bytes/runlist and unique signed-catalog content digest completion. Historical component-version binding is inferred, original index digest unavailable.')
-    for name,value in (('accepted-mappings.json',accepted),('recovery-plan.json',plan),('catalog-completion-evidence.json',reports)):(a.output/name).write_text(json.dumps(value,indent=2))
+    for name,value in (('accepted-mappings.json',accepted),('recovery-plan.json',plan),('catalog-completion-evidence.json',reports),('supplemental-placements.json',supplemental)):(a.output/name).write_text(json.dumps(value,indent=2))
     result=dict(accepted_destinations=len(accepted),accepted_bytes=sum(m['length'] for m in accepted),new_placements=len(accepted)-previous,targets=len(reports),conflicts=conflicts);(a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)
 
 

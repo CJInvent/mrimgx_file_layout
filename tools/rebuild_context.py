@@ -36,3 +36,6 @@ class Context:
         data=record.open().read()
         if len(data)!=record.size():raise ValueError('short file')
         return record,data
+
+    def close(self):
+        self.fs.mft.fh.close();self.volume.baseline.fh.close();self.source.close();self.decode.cache_clear()

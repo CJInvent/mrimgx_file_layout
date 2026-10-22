@@ -19,10 +19,21 @@ def prepare(baseline,manifest,layout,output,partition=2):
     fs.mft.fh=cache.open('rb');ranges=[]
     for row in map(json.loads,manifest.open()):
         if row.get('partition')==partition and row.get('operation')=='range' and row.get('status') in ('unknown-zero-index','unrecoverable','reconstructed-unverified'):ranges.append((row['disk_offset']-origin,row['disk_offset']+row['length']-origin,row['status']))
-    ranges.sort();ends=[hi for lo,hi,status in ranges];counts=collections.Counter();last=time.monotonic();size=fs._record_size
+    ranges.sort();ends=[hi for lo,hi,status in ranges];counts=collections.Counter();last=time.monotonic();size=fs._record_size;allocated=None
+    try:
+        record=fs.mft.get(0);bitmap_type=ATTRIBUTE_TYPE_CODE.BITMAP
+        for lcn,n in record.dataruns('',bitmap_type):
+            if lcn is None:raise ValueError('sparse MFT allocation bitmap')
+            if any(status in ('unknown-zero-index','unrecoverable') and lo<(lcn+n)*4096 and hi>lcn*4096 for lo,hi,status in ranges):raise ValueError('MFT allocation bitmap crosses missing data')
+        if record.size('',bitmap_type)>2*1024**2:raise ValueError('excessive MFT bitmap')
+        allocated=record.open('',bitmap_type).read()
+        if len(allocated)*8<mftsize//size:raise ValueError('short MFT allocation bitmap')
+    except Exception:allocated=None
     with (output/'affected-files.jsonl').open('x') as out:
         for number in range(mftsize//size):
             try:
+                if allocated is not None and not allocated[number//8]&(1<<(number%8)):
+                    counts['unallocated_records']+=1;continue
                 record=fs.mft.get(number)
                 if not record.header.Flags&1:continue
                 counts['active_records']+=1;hits=[]
@@ -42,7 +53,7 @@ def prepare(baseline,manifest,layout,output,partition=2):
                 counts['unreadable_records']+=1
                 if counts['unreadable_records']<=10:print('MFT',number,str(e),flush=True)
             if time.monotonic()-last>10:print(json.dumps(dict(record=number,counts=counts)),flush=True);last=time.monotonic();out.flush()
-    (output/'summary.json').write_text(json.dumps(dict(counts=counts,partition=partition,mft_bytes=mftsize,scope='Original allocated DATA/INDEX runlist overlaps; unreadable records may hide additional files.'),indent=2))
+    (output/'summary.json').write_text(json.dumps(dict(counts=counts,partition=partition,mft_bytes=mftsize,mft_allocation_bitmap_readable=allocated is not None,scope='Original allocated DATA/INDEX runlist overlaps; unreadable allocated records may hide additional files. Unknown MFT bitmap falls back to parsing record slots.'),indent=2))
     return cache,output/'affected-files.jsonl'
 
 

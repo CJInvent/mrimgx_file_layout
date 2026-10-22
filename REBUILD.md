@@ -29,6 +29,15 @@ package metadata can expose more constraints. `--rounds N`, `--stages LIST` and
 remaining data is unmappable. Stage failures remain in `summary.json` and are
 never described as successful exhaustive analysis.
 
+Before filesystem searches, `residual-audit` retries incremental decoding and
+scans raw residual/metadata regions for fixup-valid NTFS records. `bit-repair`
+tests single encoded-bit changes against surviving original index MD5 values,
+using up to eight native workers and retaining per-frame progress logs. These
+stages run by default. `--bit-repair-exe` selects a different repair executable.
+Validated index repairs go only into the derived clone, before preparing its MFT;
+a separate analysis manifest makes those proven ranges available to later stages.
+The original baseline manifest remains the write/preservation authority.
+
 The default stages include original/partial index hashes, NTFS directory VCNs
 and fixups, Chromium key identities, Appx hashes, cabinet checksums and complete
 folder decompression, embedded PE digests, exact duplicate slices, original PDF
@@ -36,6 +45,9 @@ cross-reference offsets, Chakra self-offsets, SQLite WAL rolling checksums, ESE
 page checksums and addresses, FAT directories/chains/duplicates, joint FAT/NTFS
 PE completion, PNG CRC/zlib/scanlines, MSI original file hashes and signed catalog
 member hashes. Chakra records and duplicate donors are discovered automatically.
+Chromium body completion additionally checks original key identity and stream
+CRCs, requiring two crossing CRCs or nested checksum/hash evidence; a single
+CRC32 match is insufficient. MFT inventory respects a readable allocation bitmap.
 Source order can nominate combinations only; it never authorizes a placement.
 
 Optional `--metadata-identity` enables the weaker, separately labeled duplicate
@@ -43,15 +55,29 @@ inference using matching original filename, size and exact modification time.
 Catalog completions require distinctive surviving bytes and a unique candidate;
 catalog content/signature validation does not itself prove a historical installed
 component version or certificate trust. Evidence retains this distinction.
+Catalog searches also try bounded source-sequence combinations for files with
+two through eight missing frames. Complete digest matches from that broader
+search are exported as candidates, because a bounded search against multiple
+catalog versions cannot establish unique historical placement.
 
 ## Outputs and placement rules
 
 The original baseline stays unchanged. `rebuilt.vhdx` is a new sparse clone.
-Only accepted, nonconflicting source-frame mappings go into it. Every source
+Only accepted, nonconflicting source-frame mappings and verified supplemental
+file slices/index repairs go into it. Every source
 frame and previous placement is checked before writing, then independently
 read back. The baseline preservation proof checks copied allocated bytes while
 normalizing only journaled mutations. QEMU also checks the resulting container.
 These checks do not assert a complete or bootable filesystem.
+
+When a catalog validates a complete file but cannot uniquely bind the enclosing
+frame, the tool can restore just the validated missing file bytes at its original
+MFT runlist positions. PE checksum/security/certificate exclusions are respected.
+`supplemental-placements.json` records those exact byte ranges separately from
+full-frame mappings. Other bytes in the enclosing frames stay unresolved and
+remain exported; frame-level residual totals therefore include some proven slices.
+Single-bit repairs retain the original encoded bytes and separate repaired
+derivatives, and must reproduce the original indexed decoded length and MD5.
 
 `recovered_files` is a real directory outside the VHDX:
 
@@ -60,8 +86,15 @@ These checks do not assert a complete or bootable filesystem.
   original placement remain here even when internally valid.
 - `fragments`: every location-unresolved decoded frame, with its own JSON
   sidecar. Partial files and unrecognized formats are preserved as fragments.
+- `candidates`: reconstructed cache files passing their original CRC32 but
+  lacking enough independent validation for VHDX insertion. Sidecars retain
+  candidate paths/runlists, source frames and the additional validation needed.
 - `index.jsonl`: frame provenance and disposition.
 - `metadata-enrichment.json`: count of files with candidate NTFS metadata.
+- `verified-supplemental-placements.json`: proven sub-frame ranges and index
+  repairs, so retained enclosing fragments are not confused with wholly unknown data.
+- `incomplete-decoding` and `indexed-bit-repair`: partial decode evidence and
+  verified repaired frame derivatives, with provenance JSON.
 
 Sidecars include SHA-256, byte length, source offset, frame offset, validation,
 known embedded names, candidate original paths/MFT records/runlists, and explicit
