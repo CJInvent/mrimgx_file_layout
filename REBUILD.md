@@ -64,6 +64,9 @@ least 256 bytes each), plus a unique distinctive full-frame boundary, can be
 placed after independent overlay validation. Other candidates remain external;
 newly supplied internal CRCs alone never authorize VHDX insertion.
 Source order can nominate combinations only; it never authorizes a placement.
+MFT nomination scans restore and validate sector update-sequence fixups before
+reading filenames or sizes. A sector-trailer stamp must not turn an ordinary
+installer/catalog size into an enormous value and silently exclude it.
 
 Optional `--metadata-identity` enables the weaker, separately labeled duplicate
 inference using matching original filename, size and exact modification time.
@@ -153,6 +156,12 @@ counts and examples; millions of normal nonmatches are not reported as millions
 of missing files. `summary.json` links the consolidated audit and reports error
 and warning totals. These logs make a partial result auditable; they never turn
 bounded searches into proof that every remaining byte is unmappable.
+
+For independent regression comparisons, `tools/compare_rebuild_results.py` reads
+actual rebuilt VHDX ranges and recovered artifacts against separately supplied
+reference results. References are post-run test inputs; they are never passed
+to reconstruction. Matching bytes, audit status and absence of operational
+errors are checked separately from mapping counts.
 
 Current mapping stages support one unencrypted, unsplit full image, the tested
 FAT EFI partition at index 0, and Windows NTFS at index 2 with 4096-byte clusters

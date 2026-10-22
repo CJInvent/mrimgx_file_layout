@@ -11,23 +11,28 @@ import json
 import mmap
 import pathlib
 import struct
+from dissect.ntfs.util import apply_fixup
+from rebuild_audit import caught
 
 
 def candidate_records(data):
     for start in range(0,len(data)-1023,1024):
         if data[start:start+4]!=b'FILE' or not struct.unpack_from('<H',data,start+22)[0]&1:continue
-        pos=start+struct.unpack_from('<H',data,start+20)[0];names=[];size=None
-        while pos+24<=start+1024:
-            kind,length=struct.unpack_from('<II',data,pos)
-            if kind==0xffffffff or length<24 or pos+length>start+1024:break
-            if kind==48 and data[pos+8]==0:
-                value=pos+struct.unpack_from('<H',data,pos+20)[0]
+        try:record=apply_fixup(data[start:start+1024])
+        except Exception as e:caught(e,dict(number=start//1024),site='candidate-record-fixups');continue
+        pos=struct.unpack_from('<H',record,20)[0];names=[];size=None
+        if not 48<=pos<=1000:continue
+        while pos+24<=1024:
+            kind,length=struct.unpack_from('<II',record,pos)
+            if kind==0xffffffff or length<24 or pos+length>1024:break
+            if kind==48 and record[pos+8]==0:
+                value=pos+struct.unpack_from('<H',record,pos+20)[0]
                 if value+66<=pos+length:
-                    n=data[value+64]
-                    if value+66+2*n<=pos+length:names.append(data[value+66:value+66+2*n].decode('utf-16-le',errors='replace'))
-            elif kind==128 and data[pos+9]==0:
-                if data[pos+8] and length>=64:size=struct.unpack_from('<Q',data,pos+48)[0]
-                elif not data[pos+8]:size=struct.unpack_from('<I',data,pos+16)[0]
+                    n=record[value+64]
+                    if value+66+2*n<=pos+length:names.append(record[value+66:value+66+2*n].decode('utf-16-le',errors='replace'))
+            elif kind==128 and record[pos+9]==0:
+                if record[pos+8] and length>=64:size=struct.unpack_from('<Q',record,pos+48)[0]
+                elif not record[pos+8]:size=struct.unpack_from('<I',record,pos+16)[0]
             pos+=length
         if names and size is not None:yield start//1024,names,size
 

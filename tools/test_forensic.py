@@ -41,6 +41,16 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_mft_candidate_names_crossing_sector_trailers_require_fixups(self):
+        import struct
+        raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1);struct.pack_into('<II',raw,56,16,344);name='long-name-for-recovery.catalog.cat';encoded=name.encode('utf-16-le');length=(90+len(encoded)+7)//8*8;struct.pack_into('<II',raw,400,48,length);struct.pack_into('<H',raw,420,24);raw[488]=len(name);raw[490:490+len(encoded)]=encoded;data_at=400+length;struct.pack_into('<II',raw,data_at,128,64);raw[data_at+8]=1;struct.pack_into('<Q',raw,data_at+48,987654);struct.pack_into('<I',raw,data_at+64,0xffffffff);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5';before=bytes(raw)
+        self.assertEqual(list(candidate_records(raw)),[(0,[name],987654)]);self.assertEqual(bytes(raw),before);raw[1022]^=1;self.assertEqual(list(candidate_records(raw)),[])
+
+    def test_mft_candidate_file_size_crossing_sector_trailer_is_restored(self):
+        import struct
+        raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1);struct.pack_into('<II',raw,56,48,112);struct.pack_into('<H',raw,76,24);name='setup.msi';raw[144]=len(name);raw[146:146+2*len(name)]=name.encode('utf-16-le');struct.pack_into('<II',raw,168,16,288);struct.pack_into('<II',raw,456,128,64);raw[464]=1;struct.pack_into('<Q',raw,504,987654);struct.pack_into('<I',raw,520,0xffffffff);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5'
+        self.assertGreater(struct.unpack_from('<Q',raw,504)[0],512*1024**2);self.assertEqual(list(candidate_records(raw)),[(0,[name],987654)])
+
     def test_audit_keeps_all_item_errors_and_counts_expected_rejections(self):
         previous_audit=os.environ.get('REBUILD_AUDIT_LOG')
         with tempfile.TemporaryDirectory() as directory:
