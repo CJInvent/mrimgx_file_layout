@@ -169,7 +169,7 @@ def main():
                             try:identity=pe_identity(bytes(candidate),full)
                             except Exception as e:report['identity_rejections'].append(str(e));continue
                             solution=dict(fixed2);solution.update(zip(remaining,assignment));solutions.append(solution)
-                            evidence=dict(method=('fat' if pi==0 else 'ntfs')+'-multiframe-complete-embedded-pe-image-digest',file_path=full,image_digest=info,identity=identity,missing_frames=len(bases),source_proximity_only_nominated=True)
+                            evidence=dict(method=('fat' if pi==0 else 'ntfs')+'-multiframe-complete-embedded-pe-image-digest',file_path=full,image_digest=dict(info,matches=True),identity=identity,missing_frames=len(bases),source_proximity_only_nominated=True)
                             for base,sha in solution.items():pending[base].append((frames[sha],evidence))
                 if tested>=a.per_file_budget:break
             report.update(combinations_checked=tested,solutions=len(solutions));print(full,'checked',tested,'solutions',len(solutions),flush=True)
