@@ -47,6 +47,7 @@ The program uses the following libraries:
 #include "arg_validator.h"
 #include "vhdx_handler.h"
 #include "recovery.h"
+#include "rebuild_launcher.h"
 
 // Function prototypes
 // 
@@ -77,6 +78,7 @@ int wmain(int argc, wchar_t* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
 
     try {
+        if(argc>=2 && std::wstring(argv[1])==L"--rebuild") return launchForensicRebuild(argc,argv);
         // Explicit salvage never alters the normal strict-conversion path.
         if(argc>=2 && std::wstring(argv[1])==L"--recover-plan") {
             if(argc!=6 && argc!=7 && argc!=8) throw std::runtime_error(
@@ -146,6 +148,8 @@ int wmain(int argc, wchar_t* argv[]) {
         // Print any exceptions that occur
         std::string exceptionMessage = e.what();
         std::cerr << '\n' << exceptionMessage << '\n';
+        if(exceptionMessage.find("hash")!=std::string::npos || exceptionMessage.find("checksum")!=std::string::npos)
+            std::cerr << "Corruption detected. Opt into offline forensic recovery with --rebuild; run --rebuild --help for options.\n";
 
         // If the exception message starts with "Failed to write to file", print additional information about the possible cause of the error
         if (exceptionMessage.rfind("Failed to write to file", 0) == 0) {

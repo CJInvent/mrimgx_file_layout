@@ -1,5 +1,9 @@
 # Forensic residual recovery
 
+The methods below are orchestrated by the native `--rebuild` command and
+`tools/rebuild.py`; see [REBUILD.md](REBUILD.md) for automatic discovery, repeated
+passes, stage logs, preservation proofs and external `recovered_files` sidecars.
+
 These tools extend explicit recovery without changing the original image,
 baseline VHDX, recovery plan, or initial evidence. Outputs use new directories
 and refuse replacement. They do not mount filesystems or execute recovered code.

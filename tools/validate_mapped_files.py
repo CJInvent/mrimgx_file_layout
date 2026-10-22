@@ -41,6 +41,19 @@ def main():
                     data=ntfs.mft.get(number).open().read();validation=validate_png(data);sha=hashlib.sha256(data).hexdigest()
                     if sha!=e['file_sha256_observed'] or validation!=e['validation']:raise ValueError('PNG projection differs')
                     results[key]=dict(partition=2,record=number,path=inventory[number].get('path'),kind='PNG',size=len(data),sha256=sha,validation=validation,valid=True)
+            elif method=='original-whole-file-hash-completion':
+                number=e['record'];key=(2,str(number),'file-hash')
+                if key not in results:
+                    data=ntfs.mft.get(number).open().read()
+                    if len(data)!=e['file_size'] or hashlib.new(e['algorithm'],data).hexdigest()!=e['expected_digest']:raise ValueError('original whole-file hash reconstruction differs')
+                    results[key]=dict(partition=2,record=number,path=inventory.get(number,{}).get('path'),kind='original-file-hash',size=len(data),sha256=hashlib.sha256(data).hexdigest(),original_digest=dict(algorithm=e['algorithm'],expected=e['expected_digest']),valid=True)
+            elif method=='signed-catalog-file-completion':
+                from recover_catalog_files import catalog_digest
+                number=e['record'];key=(2,str(number),'catalog')
+                if key not in results:
+                    data=ntfs.mft.get(number).open().read()
+                    if len(data)!=e['file_size'] or catalog_digest(data,e['algorithm'],e['hash_kind'])!=e['expected_digest']:raise ValueError('signed catalog file reconstruction differs')
+                    results[key]=dict(partition=2,record=number,path=inventory.get(number,{}).get('path'),kind='catalog-file-hash',size=len(data),sha256=hashlib.sha256(data).hexdigest(),catalog=e['catalog'],valid=True)
     (a.output/'accepted-mappings.json').write_text(json.dumps(maps,indent=2));(a.output/'recovery-plan.json').write_bytes((a.mapping_directory/'recovery-plan.json').read_bytes());(a.output/'file-validation.json').write_text(json.dumps(list(results.values()),indent=2));summary=dict(valid=True,validated_files=len(results),pe_files=sum(x['kind']=='PE' for x in results.values()),png_files=sum(x['kind']=='PNG' for x in results.values()),accepted_destinations=len(maps),accepted_bytes=sum(m['length'] for m in maps),scope='Read-only source-backed overlay; saving to VHDX and post-write checks are separate.');(a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
 
 

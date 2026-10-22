@@ -15,12 +15,24 @@ import unittest
 import zipfile
 
 from make_recovery_plan import make_plan, read_at
+from discover_rebuild_plan import discover
 
 EXE = pathlib.Path(sys.argv.pop(1)).resolve()
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_rebuild_help_launches_configured_python_without_conversion(self):
+        result=subprocess.run([str(EXE),'--rebuild','--python',sys.executable,'--help'],capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr);self.assertIn('--search-only',result.stdout);self.assertIn('--mapping-directory',result.stdout)
+        failure=subprocess.run([str(EXE),'--rebuild','--python',sys.executable],capture_output=True,text=True,timeout=30)
+        self.assertEqual(failure.returncode,2);self.assertIn('required',failure.stderr)
+
+    def test_discovery_corroborates_intact_and_erased_index_boundaries(self):
+        plan,proof=discover(self.source);self.assertEqual(plan,self.plan);self.assertTrue(proof['partitions'][0]['container_verified'])
+        damaged=self.root/'erased-index-container.mrimgx';data=bytearray(self.source.read_bytes());header=self.plan['partitions'][0]['header_offset'];data[header:header+32]=bytes(32);damaged.write_bytes(data)
+        plan,proof=discover(damaged);self.assertEqual(plan['partitions'][0]['entries_offset'],self.plan['partitions'][0]['entries_offset']);self.assertFalse(plan['partitions'][0]['container_verified']);self.assertGreaterEqual(len(proof['partitions'][0]['decoded_original_hash_corroborations']),8)
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()

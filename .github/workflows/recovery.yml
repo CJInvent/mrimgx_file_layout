@@ -44,3 +44,11 @@ jobs:
           path: |
             build/img_to_vhdx.exe
             build/repair_frame_bits.exe
+            tools/*.py
+            tools/requirements-forensic.txt
+            tools/ESE-LICENSE.txt
+            FORENSIC.md
+            REBUILD.md
+            RECOVERY.md
+            README.md
+            LICENSE.txt

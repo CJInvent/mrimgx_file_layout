@@ -28,9 +28,41 @@ from recover_fat_signed_pe import name_variants
 from recover_fat_multiframe_pe import assignment_digest,digest,patch
 from merge_mapping_sets import combine
 from recover_png_crc_grid import validate_png,first_idat
+from recover_file_hashes import reconstruct,distinctive_hash_bound
+from rescue_unplaced_files import carved_files,export as rescue_export
+from recover_catalog_files import projected_hash
 
 
 class ForensicTests(unittest.TestCase):
+    def test_jpeg_rescue_decodes_without_authorizing_placement(self):
+        import io
+        from PIL import Image
+        stream=io.BytesIO();Image.new('RGB',(8,8),(21,55,89)).save(stream,format='JPEG');data=stream.getvalue();files=list(carved_files(b'prefix'+data+b'suffix'));jpeg=[x for x in files if x[2]=='jpg'];self.assertEqual(len(jpeg),1);self.assertEqual(jpeg[0][1],data);self.assertTrue(jpeg[0][3]['structural_validation_only']);self.assertEqual(list(carved_files(data[:-2])),[])
+    def test_catalog_projection_hashes_all_known_and_candidate_ranges(self):
+        template=os.urandom(65536);candidate=os.urandom(16384);patches=[(32,8000,9000),(10000,30000,5000)];regions=[(0,16),(20,48),(56,62000)];data=bytearray(template)
+        for off,logical,n in patches:data[logical:logical+n]=candidate[off:off+n]
+        for algorithm in ('sha1','sha256'):
+            expected=hashlib.new(algorithm)
+            for lo,hi in regions:expected.update(data[lo:hi])
+            self.assertEqual(projected_hash(template,regions,patches,algorithm)(candidate),expected.hexdigest())
+    def test_hash_reassembly_uses_physical_pieces_and_preserves_known_bytes(self):
+        template=b'0123456789abcdefghij';contents={'x':b'ABCDE','y':b'FGHIJ'};pieces={100:[(1,2,3),(0,14,2)],200:[(2,8,2)]}
+        result=reconstruct(template,[100,200],pieces,['x','y'],contents)
+        self.assertEqual(result,b'01BCD567HIabcdABghij');self.assertEqual(template,b'0123456789abcdefghij')
+        self.assertFalse(distinctive_hash_bound(bytes(32768)));self.assertTrue(distinctive_hash_bound(os.urandom(20000)))
+
+    def test_unplaced_rescue_stays_outside_image_and_keeps_sidecars(self):
+        import struct
+        def block(kind,payload):return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload)&0xffffffff)
+        png=b'\x89PNG\r\n\x1a\n'+block(b'IHDR',struct.pack('>IIBBBBB',2,2,8,0,0,0,0))+block(b'IDAT',zlib.compress(b'\0\x01\x02\0\x03\x04'))+block(b'IEND',b'')
+        original=b'prefix'+png+bytes(128);sha=hashlib.sha256(original).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);evidence=root/'evidence';evidence.mkdir();(evidence/'orphan-decoded.bin').write_bytes(original)
+            db=sqlite3.connect(evidence/'catalog.sqlite');db.execute('CREATE TABLE frames(id,export_offset,decoded_length,source_offset,stored_length,sha256)');db.execute('INSERT INTO frames VALUES(1,0,?,4096,73,?)',(len(original),sha));db.execute('CREATE TABLE records(frame,decoded_offset,signature,length,fixup_valid,record_number,details)');db.commit();db.close();mapping=root/'mapping.json';mapping.write_text('[]');image=root/'baseline.vhdx';image.write_bytes(b'unchanged baseline')
+            result=rescue_export(evidence,mapping,root/'recovered_files');self.assertEqual(result['counts']['carved_files'],1);self.assertEqual(image.read_bytes(),b'unchanged baseline');self.assertEqual((evidence/'orphan-decoded.bin').read_bytes(),original)
+            files=list((root/'recovered_files/files').glob('*.png'));self.assertEqual(len(files),1);self.assertEqual(files[0].read_bytes(),png);side=json.loads(files[0].with_suffix('.png.json').read_text());self.assertFalse(side['vhdx_insertion_authorized']);self.assertEqual(side['placement_status'],'unresolved');self.assertEqual(side['provenance'][0]['frame_offset'],6)
+            damaged=bytearray(png);damaged[-5]^=1;self.assertEqual(list(carved_files(bytes(damaged))),[])
+
     def test_png_complete_crc_zlib_and_scanline_validation(self):
         import struct
         def block(kind,payload):return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload)&0xffffffff)

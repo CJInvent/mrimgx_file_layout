@@ -9,6 +9,7 @@ Normal conversion remains strict. Partial recovery is opt-in and returns exit
 code 2; a full-size output is not a guarantee that all original data survived.
 
 - [Build, recovery-plan workflow and validation instructions](RECOVERY.md)
+- [Opt-in automated rebuild and external recovered_files export](REBUILD.md)
 - [Test results and limitations](VALIDATION.md)
 - [Windows CI and executable artifacts](https://github.com/CJInvent/mrimgx_file_layout/actions/workflows/recovery.yml)
 
