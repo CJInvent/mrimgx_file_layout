@@ -46,7 +46,7 @@ def compare(rebuild,reference_mappings,reference_supplemental,reference_files,ou
         for path in external.get(sha,[]):
             if path not in cached:cached[path]=digest_file(path)
             if cached[path]==sha:return str(path)
-    layout=json.loads((rebuild/'evidence/layout.json').read_text());p=layout['disks'][0]['partitions'][2];fs=NTFS(RangeStream(v,p['_geometry']['start'],p['_geometry']['length']));ref_artifacts=artifacts(reference_files);ref_frames={meta['source_offset']:meta for path,meta in ref_artifacts if meta.get('kind')=='unplaced-frame'};file_results=[];unresolved=[]
+    layout=json.loads((pathlib.Path(summary.get('evidence_directory',rebuild/'evidence'))/'layout.json').read_text());p=layout['disks'][0]['partitions'][2];fs=NTFS(RangeStream(v,p['_geometry']['start'],p['_geometry']['length']));ref_artifacts=artifacts(reference_files);ref_frames={meta['source_offset']:meta for path,meta in ref_artifacts if meta.get('kind')=='unplaced-frame'};file_results=[];unresolved=[]
     for path,meta in ref_artifacts:
         sha=meta['sha256'];row=dict(reference=str(path),kind=meta.get('kind'),sha256=sha,bytes=path.stat().st_size);represented=None
         if digest_file(path)!=sha:raise ValueError('reference artifact changed: '+str(path))
