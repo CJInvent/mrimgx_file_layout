@@ -71,7 +71,7 @@ class ForensicTests(unittest.TestCase):
     def test_resume_retains_original_validation_base_and_completed_artifacts(self):
         from rebuild_resume import resume_inputs
         with tempfile.TemporaryDirectory() as temporary:
-            root=pathlib.Path(temporary);run=root/'prior';run.mkdir()
+            root=pathlib.Path(temporary).resolve();run=root/'prior';run.mkdir()
             paths={name:root/name for name in ('source','baseline','manifest','evidence','mft','inventory')}
             plan={'fingerprint':'same-source'};(run/'discovered-plan.json').write_text(json.dumps(plan))
             (run/'audit-events.jsonl').write_text(json.dumps(dict(category='run-start',context=dict(arguments={k:str(v) for k,v in paths.items()})))+'\n')
