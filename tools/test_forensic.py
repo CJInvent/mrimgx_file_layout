@@ -41,6 +41,28 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_resume_retains_original_validation_base_and_completed_artifacts(self):
+        from rebuild_resume import resume_inputs
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary);run=root/'prior';run.mkdir()
+            paths={name:root/name for name in ('source','baseline','manifest','evidence','mft','inventory')}
+            plan={'fingerprint':'same-source'};(run/'discovered-plan.json').write_text(json.dumps(plan))
+            (run/'audit-events.jsonl').write_text(json.dumps(dict(category='run-start',context=dict(arguments={k:str(v) for k,v in paths.items()})))+'\n')
+            base=run/'initial-mapping';base.mkdir();(base/'accepted-mappings.json').write_text('[]')
+            completed=run/'0002-recover_file_hashes';completed.mkdir();(completed/'accepted-mappings.json').write_text('[{"disk_offset":1}]');(completed/'supplemental-placements.json').write_text('[]');(completed/'recovered_files').mkdir()
+            failed=run/'0003-incomplete';failed.mkdir();(failed/'accepted-mappings.json').write_text('[]');(failed/'recovered_files').mkdir()
+            (run/'stages.json').write_text(json.dumps([dict(success=True,command=[str(completed)]),dict(success=False,command=[str(failed)])]))
+            result=resume_inputs(run,completed,**paths,plan=plan)
+            self.assertEqual(pathlib.Path(result['validation_base']),base)
+            self.assertEqual(result['candidate_directories'],[str(completed/'recovered_files')])
+            self.assertEqual(result['supplemental_paths'],[str(completed/'supplemental-placements.json')])
+            self.assertFalse(result['previous_run_completed'])
+            with self.assertRaisesRegex(ValueError,'completed stage'):resume_inputs(run,failed,**paths,plan=plan)
+            with self.assertRaisesRegex(ValueError,'plan mismatch'):resume_inputs(run,completed,**paths,plan={})
+            with self.assertRaisesRegex(ValueError,'same source'):resume_inputs(run,completed,**dict(paths,source=root/'different'),plan=plan)
+            inherited=dict(result,validation_base=str(base));(run/'resume-inputs.json').write_text(json.dumps(inherited))
+            self.assertEqual(resume_inputs(run,completed,**paths,plan=plan)['validation_base'],str(base))
+
     def test_managed_resource_culture_requires_original_directory_agreement(self):
         from pe_anchors import resource_culture_binding
         from types import SimpleNamespace

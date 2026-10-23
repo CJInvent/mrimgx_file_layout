@@ -174,6 +174,16 @@ without changing an image. To refine an existing derived clone, supply all four:
 `--existing-clone`, `--clone-manifest`, `--previous-refinement`, and
 `--previous-validation`. The original baseline is still required and unchanged.
 
+After an interrupted run, also supply `--resume-run PREVIOUS_OUTPUT` and a
+`--mapping-directory` from a successfully completed stage in that run. Supply
+the same source, baseline, manifest, plan, evidence, MFT and inventory paths.
+The tool retains completed external candidates and supplemental slice requests,
+repeats the enabled discovery stages to convergence, and independently validates
+every checkpoint addition against the previous run's original mapping base.
+Incomplete stage outputs are excluded. Use a new output directory; the previous
+run and its incomplete audit remain preserved. Resume does not imply the prior
+run completed or that checkpoint proposals were already validated.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a

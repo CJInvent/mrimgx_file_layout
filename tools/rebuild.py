@@ -86,11 +86,13 @@ def main():
     ap.add_argument('--per-file-budget',type=int,default=300000);ap.add_argument('--metadata-identity',action='store_true',help='also permit separately labeled filename/size/exact-time duplicate inferences')
     ap.add_argument('--existing-clone',type=pathlib.Path);ap.add_argument('--clone-manifest',type=pathlib.Path);ap.add_argument('--previous-refinement',type=pathlib.Path);ap.add_argument('--previous-validation',type=pathlib.Path)
     ap.add_argument('--search-only',action='store_true',help='produce mappings and recovered_files; never modify an image')
+    ap.add_argument('--resume-run',type=pathlib.Path,help='retain completed candidate/slice outputs and independently validate checkpoint additions against the previous run original mapping base; supply its same inputs and a completed --mapping-directory')
     a=ap.parse_args()
     if bool(a.baseline)!=bool(a.manifest) or bool(a.mft)!=bool(a.inventory):ap.error('baseline/manifest and mft/inventory must be supplied in pairs')
     continuation=(a.existing_clone,a.clone_manifest,a.previous_refinement,a.previous_validation)
     if any(continuation) and not all(continuation):ap.error('continuation requires all four clone/preservation arguments')
     if a.rounds<0 or a.per_file_budget<1:ap.error('invalid search limits')
+    if a.resume_run and not a.mapping_directory:ap.error('--resume-run requires --mapping-directory')
     requested=set(a.stages.split(','));unknown=requested-set(DEFAULT_STAGES.split(','))
     if unknown:ap.error('unknown stages: '+','.join(sorted(unknown)))
     a.output.mkdir(exist_ok=False);(a.output/'logs').mkdir();runner=Runner(a.output,vars(a));ACTIVE_RUNNER=runner
@@ -158,7 +160,12 @@ def main():
         prep=a.output/'filesystem';runner.call('prepare_rebuild',[baseline,manifest,evidence/'layout.json',prep]);mft=prep/'mft.bin';inventory=prep/'affected-files.jsonl'
     current=a.mapping_directory
     if current is None:current=runner.call('map_orphan_frames',[a.source,a.plan,manifest,evidence,baseline,mft,a.output/'initial-mapping','--file-inventory',inventory,'--pe-anchors','--appx-anchors'],a.output/'initial-mapping')
-    initial=current;round_number=0;fixed_point=False;catalog_members_for_rescue=None
+    resume={}
+    if a.resume_run:
+        from rebuild_resume import resume_inputs
+        resume=resume_inputs(a.resume_run,current,a.source,original_baseline,original_manifest,evidence,mft,inventory,plan)
+        (a.output/'resume-inputs.json').write_text(json.dumps(resume,indent=2));emit('checkpoint-resume','Completed outputs retained; checkpoint additions require independent validation',context=resume)
+    initial=pathlib.Path(resume['validation_base']) if resume else current;round_number=0;fixed_point=False;catalog_members_for_rescue=None
     def maps(path):return json.loads((path/'accepted-mappings.json').read_text())
     def stage(tool,args):
         nonlocal current
@@ -261,6 +268,7 @@ def main():
         for row in map(json.loads,a.previous_refinement.open()):
             if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
     paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))+list(a.output.glob('*-recover_file_hashes/supplemental-placements.json'))
+    paths += [pathlib.Path(p) for p in resume.get('supplemental_paths',[])]
     if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
     for path in paths:
         for m in json.loads(path.read_text()):
@@ -299,8 +307,10 @@ def main():
     bound_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-inf-catalog-reference-and-named-member'}
     zip_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='zip-original-member-crcs-and-directory'}
     hash_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='original-whole-file-hash-completion'}
-    for directory in sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))+list(a.output.glob('*-recover_zip_files/recovered_files'))+list(a.output.glob('*-recover_file_hashes/recovered_files'))):
-        target=candidates/directory.parent.name;target.mkdir(parents=True,exist_ok=False)
+    candidate_directories=sorted(list(a.output.glob('*-recover_chromium_streams/recovered_files'))+list(a.output.glob('*-recover_catalog_sequences/recovered_files'))+list(a.output.glob('*-recover_zip_files/recovered_files'))+list(a.output.glob('*-recover_file_hashes/recovered_files')))
+    candidate_directories += [pathlib.Path(p) for p in resume.get('candidate_directories',[])]
+    for directory in candidate_directories:
+        target=candidates/(directory.parent.name+'-'+hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:12]);target.mkdir(parents=True,exist_ok=False)
         for item in directory.iterdir():
             if not item.is_file():continue
             shutil.copy2(item,target/item.name)
