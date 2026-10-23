@@ -276,6 +276,11 @@ nonzero failure and never create a successful completion report.
 
 ## Audit logs
 
+Inventory refresh reads newly available NTFS attribute lists through the current
+source-backed overlay, while retaining the original corruption ranges for
+discovery. A record whose hidden data run is now fully repaired remains in the
+affected-file inventory and member-export audit on resumed runs.
+
 Every initialized run writes `audit-summary.log`, `audit-summary.json`,
 `audit-events.jsonl`, and `audit-errors.jsonl`, including fatal discovery/startup
 failures. Errors and warnings are appended immediately with tool, stage, file or

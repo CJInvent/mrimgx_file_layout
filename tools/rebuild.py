@@ -230,7 +230,7 @@ def main():
     while not a.rounds or round_number<a.rounds:
         before=len(maps(current))+len(known_index_reconstructions);round_number+=1;print(json.dumps(dict(round=round_number,mappings=len(maps(current)),reconstructed_indexed_frames=len(known_index_reconstructions))),flush=True)
         refreshed=a.output/f'inventory-{round_number:03d}'
-        runner.call('refresh_rebuild_inventory',[a.source,baseline,mft,inventory,manifest,evidence,current,refreshed])
+        runner.call('refresh_rebuild_inventory',[a.source,baseline,mft,inventory,manifest,evidence,current,refreshed,'--original-manifest',original_manifest])
         inventory=refreshed/'affected-files.jsonl'
         for name in DEFAULT_STAGES.split(','):
             if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue

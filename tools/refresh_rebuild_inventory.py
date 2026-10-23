@@ -31,11 +31,14 @@ def external_attribute_list_records(data,record_size=1024):
         except Exception as error:caught(error,dict(record=start//record_size),site='inventory-refresh-nomination')
 
 
-def refresh(source,baseline,mft,inventory,manifest,evidence,mapping_directory,output):
+def refresh(source,baseline,mft,inventory,manifest,evidence,mapping_directory,output,original_manifest=None):
     output.mkdir(exist_ok=False);ctx=Context(source,baseline,mft,manifest,evidence,mapping_directory)
     with inventory.open() as stream:rows={r['record']:r for r in map(json.loads,stream)}
     previous=set(rows);counts=collections.Counter();ranges=[]
-    with manifest.open() as stream:
+    # Read recovered attribute-list data through the current overlay, but retain
+    # original damage for discovery. A repaired hidden DATA run still belongs
+    # in the forensic inventory and archive/member audit on a resumed run.
+    with (original_manifest or manifest).open() as stream:
         for r in map(json.loads,stream):
             if r.get('operation')=='range' and r.get('partition')==2 and r.get('status') in ('unknown-zero-index','unrecoverable','reconstructed-unverified'):
                 ranges.append((r['disk_offset']-ctx.origin,r['disk_offset']+r['length']-ctx.origin,r['status']))
@@ -64,11 +67,12 @@ def refresh(source,baseline,mft,inventory,manifest,evidence,mapping_directory,ou
                 counts['unreadable_records']+=1;caught(error,dict(record=number),site='inventory-refresh-record')
     with (output/'affected-files.jsonl').open('x') as stream:
         for number in sorted(rows):stream.write(json.dumps(rows[number])+'\n')
-    summary=dict(counts=counts,previous_affected_records=len(previous),affected_records=len(rows),mapping_directory=str(mapping_directory.resolve()),scope='Discovery inventory only. Source, MFT, baseline and previous inventory unchanged; placement still requires independent validation.')
+    summary=dict(counts=counts,previous_affected_records=len(previous),affected_records=len(rows),mapping_directory=str(mapping_directory.resolve()),original_damage_manifest=str((original_manifest or manifest).resolve()),active_analysis_manifest=str(manifest.resolve()),scope='Discovery inventory only, including originally affected ranges that are now repaired. Source, MFT, baseline and previous inventory unchanged; placement still requires independent validation.')
     (output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True);ctx.close()
 
 
 if __name__=='__main__':
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','inventory','manifest','evidence','mapping_directory','output'):ap.add_argument(name,type=pathlib.Path)
+    ap.add_argument('--original-manifest',type=pathlib.Path,help='Nominate originally affected records even after a proven repair removes current holes; current manifest remains the read overlay')
     refresh(**vars(ap.parse_args()))
