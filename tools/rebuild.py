@@ -179,6 +179,9 @@ def main():
             errors.append(dict(tool=tool,error=str(e)))
     while not a.rounds or round_number<a.rounds:
         before=len(maps(current));round_number+=1;print(json.dumps(dict(round=round_number,mappings=before)),flush=True)
+        refreshed=a.output/f'inventory-{round_number:03d}'
+        runner.call('refresh_rebuild_inventory',[a.source,baseline,mft,inventory,manifest,evidence,current,refreshed])
+        inventory=refreshed/'affected-files.jsonl'
         for name in DEFAULT_STAGES.split(','):
             if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]

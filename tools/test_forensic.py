@@ -41,6 +41,33 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_inventory_refresh_nominates_only_active_external_attribute_lists(self):
+        import struct
+        from refresh_rebuild_inventory import external_attribute_list_records
+        raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1);struct.pack_into('<II',raw,56,32,64);raw[64]=1;struct.pack_into('<I',raw,120,0xffffffff);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5';before=bytes(raw)
+        self.assertEqual(list(external_attribute_list_records(raw)),[0]);self.assertEqual(bytes(raw),before)
+        raw[64]=0;self.assertEqual(list(external_attribute_list_records(raw)),[])
+        raw[64]=1;raw[22]=0;self.assertEqual(list(external_attribute_list_records(raw)),[])
+        raw[22]=1;raw[510]^=1;self.assertEqual(list(external_attribute_list_records(raw)),[])
+
+    def test_inventory_refresh_discovers_overlay_runs_and_preserves_previous_rows(self):
+        import struct
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from refresh_rebuild_inventory import refresh
+        from dissect.ntfs.c_ntfs import ATTRIBUTE_TYPE_CODE as Kind
+        raw=bytearray(1024);raw[:4]=b'FILE';struct.pack_into('<HH',raw,4,48,3);struct.pack_into('<HH',raw,20,56,1);struct.pack_into('<II',raw,56,32,64);raw[64]=1;struct.pack_into('<I',raw,120,0xffffffff);raw[48:54]=b'\x5a\xa5'+raw[510:512]+raw[1022:1024];raw[510:512]=raw[1022:1024]=b'\x5a\xa5'
+        attribute=SimpleNamespace(header=SimpleNamespace(name='',resident=False))
+        class Attributes:
+            def __getitem__(self,kind):return [attribute] if kind==Kind.DATA else []
+            def find(self,name,kind):return self[kind]
+        record=SimpleNamespace(attributes=Attributes(),dataruns=lambda name,kind:[(7,2)],full_path=lambda:'restored\\file.bin')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary);mft=root/'mft';mft.write_bytes(raw);inventory=root/'inventory';original=dict(record=4,path='existing',ranges=[]);inventory.write_text(json.dumps(original)+'\n');manifest=root/'manifest';manifest.write_text(json.dumps(dict(operation='range',partition=2,status='unknown-zero-index',disk_offset=1000+7*4096,length=8192))+'\n');output=root/'refreshed'
+            ctx=SimpleNamespace(origin=1000,fs=SimpleNamespace(_record_size=1024,cluster_size=4096,mft=SimpleNamespace(get=lambda number:record)),close=lambda:None)
+            with patch('refresh_rebuild_inventory.Context',return_value=ctx):refresh(root/'source',root/'baseline',mft,inventory,manifest,root/'evidence',root/'mapping',output)
+            rows=list(map(json.loads,(output/'affected-files.jsonl').open()));self.assertEqual(rows[1],original);self.assertEqual(rows[0]['record'],0);self.assertEqual(rows[0]['ranges'][0]['length'],8192);self.assertEqual(mft.read_bytes(),bytes(raw));self.assertEqual(inventory.read_text(),json.dumps(original)+'\n')
+
     def test_resume_retains_original_validation_base_and_completed_artifacts(self):
         from rebuild_resume import resume_inputs
         with tempfile.TemporaryDirectory() as temporary:

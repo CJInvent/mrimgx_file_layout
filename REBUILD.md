@@ -184,6 +184,12 @@ Incomplete stage outputs are excluded. Use a new output directory; the previous
 run and its incomplete audit remain preserved. Resume does not imply the prior
 run completed or that checkpoint proposals were already validated.
 
+Each discovery round also revisits nonresident NTFS attribute lists through the
+current recovered overlay. Restoring an attribute-list frame can reveal DATA or
+directory extents absent from the initial inventory. These newly visible files
+join the normal hash, format and runlist searches automatically; the original
+inventory and cached MFT remain unchanged.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a
