@@ -11,7 +11,7 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
+DEFAULT_STAGES='residual-audit,bit-repair,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
 ACTIVE_RUNNER=None
 
 
@@ -204,7 +204,8 @@ def main():
         for name in DEFAULT_STAGES.split(','):
             if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
-            if name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
+            if name=='ntfs-metadata':stage('recover_ntfs_metadata_links',[a.source,baseline,mft,manifest,evidence,current])
+            elif name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
                 if name=='appx':
                     collected=a.output/f'appx-signatures-{round_number:03d}'
                     try:
@@ -318,6 +319,7 @@ def main():
         runner.call('refine_vhdx',args);args=[original_baseline,revised,copylog,journal,a.output/'baseline-preservation.json']
         if a.previous_refinement:args+=['--previous-refinement',a.previous_refinement,'--previous-validation',a.previous_validation]
         runner.call('verify_refined_clone',args)
+        runner.call('verify_placed_content',[a.source,revised,current/'accepted-mappings.json',supplemental,a.output/'placed-content-validation'])
         runner.process('qemu-container-check',[str(a.qemu_img),'check',str(revised)])
     runner.call('export_unresolved',[evidence,current/'accepted-mappings.json',a.output/'decoded-residual'])
     runner.call('refinement_coverage',[a.source,evidence,current/'accepted-mappings.json',a.output/'encoded-residual'])

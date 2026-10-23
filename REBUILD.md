@@ -199,6 +199,22 @@ matches authorize writes, independent checks repeat the package signature,
 original file/path/sequence binding, source-piece reconstruction, XML block hash
 and NTFS runlist projection. No certificate-chain trust claim is made.
 
+The `ntfs-metadata` stage also handles security indexes that carry no filename
+parent references. It cross-checks multiple original `$SDS` descriptors and their
+hashes against `$Secure` index entries and named-index runlists. Parentless
+directory pages can be located by an exact original `$LogFile` LSN, including
+bounded multi-page transactions, only when the current directory sequence,
+index VCN and runlist independently agree with the logged physical address.
+This reads transaction data without replaying it. Unsupported log versions,
+missing original log bytes, reused directory records and conflicting addresses
+remain explicit rejections.
+
+After refinement, the tool independently redecodes every declared source frame
+or supplemental slice and compares it byte-for-byte with the actual VHDX
+destination. `placed-content-validation/summary.json` and `range-checks.jsonl`
+record all checks. Baseline extent preservation and container checks remain
+separate stages.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a

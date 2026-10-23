@@ -38,9 +38,23 @@ from bind_inf_catalog_candidates import original_catalog_names
 from recover_zip_files import validate_archive,original_crossing_crcs,independently_crossing
 from rebuild_audit import Audit,caught,emit
 from rebuild import Runner
+from test_ntfs_metadata_links import NtfsMetadataLinkTests
 
 
 class ForensicTests(unittest.TestCase):
+    def test_every_placed_range_is_independently_compared_with_source(self):
+        import io
+        from types import SimpleNamespace as NS
+        from unittest.mock import patch
+        from verify_placed_content import verify
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary);source=root/'source';source.write_bytes(b'preserved source');mappings=root/'maps';supplemental=root/'supp';mappings.write_text(json.dumps([dict(partition=2,disk_offset=4,length=4,sha256=hashlib.sha256(b'data').hexdigest())]));supplemental.write_text('[]');image=root/'image';image.write_bytes(b'0000data')
+            with patch('verify_placed_content.VHDX',side_effect=lambda path:NS(fh=io.BytesIO(),seek=lambda off:None,read=lambda n:b'data')),patch('verify_placed_content.payload',return_value=b'data'):
+                self.assertTrue(verify(source,image,mappings,supplemental,root/'valid')['valid'])
+            with patch('verify_placed_content.VHDX',side_effect=lambda path:NS(fh=io.BytesIO(),seek=lambda off:None,read=lambda n:b'BAD!')),patch('verify_placed_content.payload',return_value=b'data'):
+                result=verify(source,image,mappings,supplemental,root/'bad');self.assertFalse(result['valid']);self.assertEqual(result['failed_requests'],1)
+            self.assertEqual(source.read_bytes(),b'preserved source');self.assertEqual(image.read_bytes(),b'0000data')
+
     def test_reconstructed_blockmap_candidate_rechecks_source_and_known_bytes(self):
         import io
         from types import SimpleNamespace

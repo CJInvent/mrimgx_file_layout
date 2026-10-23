@@ -22,12 +22,28 @@ def main():
         source.seek(offset);return zstandard.ZstdDecompressor().decompress(source.read(length))
     v=VHDX(a.baseline);fat=FATFS(MappedVolume(v,parts[0]['_geometry']['start'],parts[0]['_geometry']['length'],mapped[0],decode));ntfs=NTFS(MappedVolume(v,parts[2]['_geometry']['start'],parts[2]['_geometry']['length'],mapped[2],decode));ntfs.mft.fh=a.mft.open('rb');inventory={r['record']:r for r in map(json.loads,a.inventory.open())};paths={(r.get('path') or '').replace('\\','/').strip('/').casefold():n for n,r in inventory.items()};results={}
     original_manifest_reader=None
+    logfile_links=None
     for m in maps:
         if m['disk_offset'] in original:
             if m!=original[m['disk_offset']]:raise ValueError('changed base mapping')
             continue
         for e in m['evidence']:
             method=e.get('method','');path=e.get('fat_path') or e.get('file_path')
+            if method=='ntfs-cross-file-index-address':
+                from component_manifest_hashes import OriginalManifestReader
+                from ntfs_metadata_links import security_link,LogFileLinks
+                if a.baseline_manifest is None:raise ValueError('baseline manifest required for original metadata address validation')
+                data=decode(m['source_offset'],m['stored_length']);off=e['page_offset']
+                if len(data)!=m['length'] or hashlib.sha256(data).hexdigest()!=m['sha256'] or hashlib.md5(data).hexdigest()!=m['decoded_md5'] or off<0 or off+4096>len(data):raise ValueError('metadata original source frame/piece differs')
+                raw=data[off:off+4096]
+                if e['kind']=='ntfs-security-index-sds-runlist':proof=security_link(ntfs,raw)
+                elif e['kind']=='ntfs-logfile-lsn-directory-runlist':
+                    if original_manifest_reader is None:original_manifest_reader=OriginalManifestReader(a.baseline,a.mft,json.loads(a.layout.read_text()),a.baseline_manifest)
+                    if logfile_links is None:logfile_links=LogFileLinks(original_manifest_reader)
+                    proof=logfile_links.directory_link(ntfs,raw)
+                else:raise ValueError('unsupported cross-file metadata address proof')
+                if proof!={k:v for k,v in e.items() if k not in ('method','page_offset')} or parts[2]['_geometry']['start']+proof['page_address']-off!=m['disk_offset']:raise ValueError('independent cross-file metadata address differs')
+                results[(2,str(m['disk_offset']),'ntfs-metadata')]=dict(partition=2,kind='cross-file-validated-ntfs-metadata-frame',disk_offset=m['disk_offset'],size=len(data),sha256=m['sha256'],valid=True)
             if method=='appx-cross-frame-sha256-mft-runlist':
                 for anchor in e.get('detail',[]):
                     candidate=anchor.get('recovered_blockmap_candidate')

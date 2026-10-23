@@ -77,12 +77,12 @@ class OriginalManifestReader:
             else:merged.append((lo,hi))
         self.ranges=merged;self.ends=[hi for lo,hi in self.ranges]
 
-    def read(self,number,path):
+    def read(self,number,path,maximum=4*1024**2):
         record=self.fs.mft.get(number)
         if not record.header.Flags&1 or record.header.Flags&2:raise ValueError('original manifest is not an active file')
         if path.casefold() not in {p.casefold() for p in record.full_paths(ignore_dos=True)}:raise ValueError('original manifest record/path differs')
         size=record.size()
-        if not 0<size<=4*1024**2:raise ValueError('original manifest size bound')
+        if not 0<size<=maximum:raise ValueError('original manifest size bound')
         if not record.resident:
             for logical,physical,length in file_extents(record,size):
                 k=bisect.bisect_right(self.ends,physical)
