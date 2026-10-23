@@ -28,6 +28,19 @@ def main():
             continue
         for e in m['evidence']:
             method=e.get('method','');path=e.get('fat_path') or e.get('file_path')
+            if method=='appx-cross-frame-sha256-mft-runlist':
+                for anchor in e.get('detail',[]):
+                    candidate=anchor.get('recovered_blockmap_candidate')
+                    if not candidate:continue
+                    from appx_blockmap_candidates import validated_candidate,validate_anchor
+                    from component_manifest_hashes import OriginalManifestReader
+                    if a.baseline_manifest is None:raise ValueError('baseline manifest required for recovered block map validation')
+                    if original_manifest_reader is None:original_manifest_reader=OriginalManifestReader(a.baseline,a.mft,json.loads(a.layout.read_text()),a.baseline_manifest)
+                    blockmap_path,override=validated_candidate(pathlib.Path(candidate),original_manifest_reader,ntfs,decode)
+                    if blockmap_path!=(anchor['package']+'\\AppxBlockMap.xml').casefold() or hashlib.sha256(override['data']).hexdigest()!=anchor['blockmap_sha256']:raise ValueError('Appx anchor original block map differs')
+                    rec=ntfs.mft.get(anchor['record']);logical,length,expected=validate_anchor(override['data'],anchor,rec,m['disk_offset']-parts[2]['_geometry']['start'],parts[2]['_header']['block_size']);stream=rec.open();stream.seek(logical);chunk=stream.read(length)
+                    if hashlib.sha256(chunk).hexdigest()!=anchor['digest']:raise ValueError('recovered Appx block map anchored file block differs')
+                    results[(2,str(anchor['record']),'recovered-appx-block')]=dict(partition=2,record=anchor['record'],kind='original-signature-bound-appx-file-block',logical_offset=anchor['logical_offset'],size=len(chunk),sha256=anchor['digest'],original_appx_signature_rechecked=True,valid=True)
             if 'complete-embedded-pe-image-digest' in method and path:
                 key=(m['partition'],path)
                 if key not in results:
@@ -49,6 +62,12 @@ def main():
                     data=ntfs.mft.get(number).open().read()
                     if len(data)!=e['file_size'] or hashlib.new(e['algorithm'],data).hexdigest()!=e['expected_digest']:raise ValueError('original whole-file hash reconstruction differs')
                     binding=e.get('hash_source') or {}
+                    if isinstance(binding,dict) and binding.get('kind')=='original-appx-signature-file-hash':
+                        from appx_signature_hashes import verify_binding as verify_appx_binding
+                        from component_manifest_hashes import OriginalManifestReader
+                        if a.baseline_manifest is None:raise ValueError('baseline manifest required for Appx signature hash validation')
+                        if original_manifest_reader is None:original_manifest_reader=OriginalManifestReader(a.baseline,a.mft,json.loads(a.layout.read_text()),a.baseline_manifest)
+                        verify_appx_binding(original_manifest_reader,ntfs.mft.get(number),binding,e['algorithm'],e['expected_digest'],ntfs)
                     if isinstance(binding,dict) and binding.get('kind')=='original-component-manifest-file-hash':
                         from component_manifest_hashes import OriginalManifestReader,verify_binding
                         if a.baseline_manifest is None:raise ValueError('baseline manifest required for component hash validation')

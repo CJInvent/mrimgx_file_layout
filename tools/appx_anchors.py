@@ -11,7 +11,7 @@ import pathlib
 import xml.etree.ElementTree as ET
 
 
-def targets(fs, inventory, stride, allowed, known_read=None):
+def targets(fs, inventory, stride, allowed, known_read=None,blockmap_overrides=None):
     packages=collections.defaultdict(list)
     for line in inventory.open():
         row=json.loads(line);path=row.get('path') or ''
@@ -21,7 +21,8 @@ def targets(fs, inventory, stride, allowed, known_read=None):
     groups=collections.defaultdict(list);stats=collections.Counter();errors=[]
     for package,files in sorted(packages.items()):
         try:
-            raw=fs.mft.get(package+'\\AppxBlockMap.xml').open().read()
+            override=(blockmap_overrides or {}).get((package+'\\AppxBlockMap.xml').casefold())
+            raw=override['data'] if override else fs.mft.get(package+'\\AppxBlockMap.xml').open().read()
             root=ET.fromstring(raw)
             if not root.attrib.get('HashMethod','').endswith('sha256'):raise ValueError('unsupported hash method')
             mapping={node.attrib['Name'].replace('/','\\').lower():node for node in root if node.tag.endswith('File')}
@@ -62,6 +63,11 @@ def targets(fs, inventory, stride, allowed, known_read=None):
         except Exception as ex:
             _audit_caught(ex, locals(), expected=False, site='appx_anchors.py:61')
             errors.append(dict(package=package,error=str(ex)))
+    if blockmap_overrides:
+        for entries in groups.values():
+            for entry in entries:
+                override=blockmap_overrides.get((entry['package']+'\\AppxBlockMap.xml').casefold())
+                if override:entry['recovered_blockmap_candidate']=override['candidate_path']
     stats['hash_target_groups']=len(groups);stats['hash_targets']=sum(map(len,groups.values()))
     return groups,dict(stats),errors
 

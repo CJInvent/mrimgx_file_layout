@@ -41,6 +41,64 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_reconstructed_blockmap_candidate_rechecks_source_and_known_bytes(self):
+        import io
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from appx_blockmap_candidates import validated_candidate
+        baseline=b'known-original-prefix'+bytes(32);frame=b'new source bytes'+bytes(32);data=baseline[:21]+frame[:32];sha=hashlib.sha256(data).hexdigest()
+        binding=dict(kind='original-appx-signature-file-hash',part='AXBM',target_record=2,target_path='Program Files\\WindowsApps\\Example\\AppxBlockMap.xml')
+        meta=dict(kind='whole-file-hash-candidate',sha256=sha,hash_evidence=[dict(algorithm='sha256',expected_digest=sha,hash_source=binding)],provenance=[dict(source_offset=100,encoded_bytes=10,frame_offset=0,file_offset=21,length=32,frame_sha256=hashlib.sha256(frame).hexdigest(),decoded_md5=hashlib.md5(frame).hexdigest())])
+        record=SimpleNamespace(size=lambda:len(data),open=lambda:io.BytesIO(baseline));fs=SimpleNamespace(mft=SimpleNamespace(get=lambda number:record))
+        with tempfile.TemporaryDirectory() as temporary:
+            path=pathlib.Path(temporary)/'candidate.xml';path.write_bytes(data);side=path.with_suffix('.xml.json');side.write_text(json.dumps(meta))
+            with patch('appx_blockmap_candidates.verify_binding',return_value=True):
+                self.assertEqual(validated_candidate(path,None,fs,lambda offset,n:frame)[1]['data'],data)
+                with self.assertRaises(ValueError):validated_candidate(path,None,fs,lambda offset,n:b'changed')
+                record.open=lambda:io.BytesIO(b'changed'+baseline[7:])
+                with self.assertRaises(ValueError):validated_candidate(path,None,fs,lambda offset,n:frame)
+                path.write_bytes(b'changed')
+                with self.assertRaises(ValueError):validated_candidate(path,None,fs,lambda offset,n:frame)
+
+    def test_appx_signature_digest_list_rejects_duplicate_or_incomplete_parts(self):
+        from appx_signature_hashes import digest_list,package_path,signature_hashes
+        blob=b'APPX'+b''.join(name+bytes([i])*32 for i,name in enumerate((b'AXPC',b'AXCD',b'AXCT',b'AXBM'),1));result=digest_list(blob);self.assertEqual(result['AXBM'],'04'*32)
+        with self.assertRaises(ValueError):digest_list(blob[:-1])
+        with self.assertRaises(ValueError):digest_list(blob.replace(b'AXCD',b'AXPC'))
+        with self.assertRaises(ValueError):digest_list(blob.replace(b'AXBM',b'NONE'))
+        self.assertEqual(package_path('Program Files\\WindowsApps\\Example_1_x64\\AppxMetadata\\CodeIntegrity.cat','AXCI'),'Program Files\\WindowsApps\\Example_1_x64')
+        with self.assertRaises(ValueError):package_path('Program Files\\WindowsApps\\Example_1_x64\\Other.xml','AXBM')
+        with self.assertRaises(ValueError):package_path('Elsewhere\\Example\\AppxBlockMap.xml','AXBM')
+        with self.assertRaises(ValueError):signature_hashes(b'not a signature')
+
+    def test_appx_signature_binding_rechecks_sequence_package_and_signed_hash(self):
+        from appx_signature_hashes import verify_binding
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        target='Program Files\\WindowsApps\\Example_1_x64\\AppxBlockMap.xml';signature_path='Program Files\\WindowsApps\\Example_1_x64\\AppxSignature.p7x';signature=b'original signature';digest='12'*32
+        record=SimpleNamespace(header=SimpleNamespace(Flags=1,SequenceNumber=7),full_paths=lambda **kwargs:[target]);sig=SimpleNamespace(header=SimpleNamespace(SequenceNumber=8));reader=SimpleNamespace(read=lambda number,path:(sig,signature))
+        binding=dict(kind='original-appx-signature-file-hash',target_path=target,target_sequence=7,part='AXBM',signature_path=signature_path,signature_record=9,signature_sequence=8,signature_sha256=hashlib.sha256(signature).hexdigest())
+        with patch('appx_signature_hashes.signature_hashes',return_value={'AXBM':digest}):
+            self.assertTrue(verify_binding(reader,record,binding,'sha256',digest))
+            with self.assertRaises(ValueError):verify_binding(reader,record,dict(binding,target_sequence=6),'sha256',digest)
+            with self.assertRaises(ValueError):verify_binding(reader,record,dict(binding,signature_path='other\\AppxSignature.p7x'),'sha256',digest)
+            with self.assertRaises(ValueError):verify_binding(reader,record,binding,'sha256','34'*32)
+            with self.assertRaises(ValueError):verify_binding(reader,record,dict(binding,signature_sha256='00'*32),'sha256',digest)
+            with self.assertRaises(ValueError):verify_binding(reader,record,dict(binding,signature_source='source-backed-mapped-overlay'),'sha256',digest)
+
+    def test_recovered_appx_anchor_requires_signed_xml_hash_and_original_runlist(self):
+        import base64
+        from types import SimpleNamespace
+        from appx_blockmap_candidates import validate_anchor
+        digest=hashlib.sha256(b'x'*32768).hexdigest();name='payload.bin';package='Program Files\\WindowsApps\\Example_1_x64';raw=('<BlockMap HashMethod="http://www.w3.org/2001/04/xmlenc#sha256"><File Name="payload.bin" Size="32768"><Block Hash="'+base64.b64encode(bytes.fromhex(digest)).decode()+'"/></File></BlockMap>').encode()
+        record=SimpleNamespace(size=lambda:32768,full_paths=lambda **kwargs:[package+'\\'+name],attributes=SimpleNamespace(DATA=[]),dataruns=lambda:[(5,8)])
+        anchor=dict(filename=name,package=package,logical_offset=0,digest=digest,frame_offset=20480,length=32768)
+        self.assertEqual(validate_anchor(raw,anchor,record,0,143360),(0,32768,digest))
+        with self.assertRaises(ValueError):validate_anchor(raw,dict(anchor,digest='00'*32),record,0,143360)
+        with self.assertRaises(ValueError):validate_anchor(raw,dict(anchor,frame_offset=0),record,0,143360)
+        with self.assertRaises(ValueError):validate_anchor(raw,dict(anchor,filename='other.bin'),record,0,143360)
+        with self.assertRaises(ValueError):validate_anchor(b'<!DOCTYPE BlockMap>'+raw,anchor,record,0,143360)
+
     def test_inventory_refresh_nominates_only_active_external_attribute_lists(self):
         import struct
         from refresh_rebuild_inventory import external_attribute_list_records
@@ -66,7 +124,7 @@ class ForensicTests(unittest.TestCase):
             root=pathlib.Path(temporary);mft=root/'mft';mft.write_bytes(raw);inventory=root/'inventory';original=dict(record=4,path='existing',ranges=[]);inventory.write_text(json.dumps(original)+'\n');manifest=root/'manifest';manifest.write_text(json.dumps(dict(operation='range',partition=2,status='unknown-zero-index',disk_offset=1000+7*4096,length=8192))+'\n');output=root/'refreshed'
             ctx=SimpleNamespace(origin=1000,fs=SimpleNamespace(_record_size=1024,cluster_size=4096,mft=SimpleNamespace(get=lambda number:record)),close=lambda:None)
             with patch('refresh_rebuild_inventory.Context',return_value=ctx):refresh(root/'source',root/'baseline',mft,inventory,manifest,root/'evidence',root/'mapping',output)
-            rows=list(map(json.loads,(output/'affected-files.jsonl').open()));self.assertEqual(rows[1],original);self.assertEqual(rows[0]['record'],0);self.assertEqual(rows[0]['ranges'][0]['length'],8192);self.assertEqual(mft.read_bytes(),bytes(raw));self.assertEqual(inventory.read_text(),json.dumps(original)+'\n')
+            rows=list(map(json.loads,(output/'affected-files.jsonl').read_text().splitlines()));self.assertEqual(rows[1],original);self.assertEqual(rows[0]['record'],0);self.assertEqual(rows[0]['ranges'][0]['length'],8192);self.assertEqual(mft.read_bytes(),bytes(raw));self.assertEqual(inventory.read_text(),json.dumps(original)+'\n')
 
     def test_resume_retains_original_validation_base_and_completed_artifacts(self):
         from rebuild_resume import resume_inputs

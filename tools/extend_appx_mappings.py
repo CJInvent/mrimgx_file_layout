@@ -20,6 +20,7 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','inventory','baseline_manifest','evidence','mapping_directory','output'):
         ap.add_argument(name,type=pathlib.Path)
+    ap.add_argument('--blockmap-candidates',type=pathlib.Path,action='append',default=[],help='source-backed, independently signature-bound recovered block map candidates')
     a=ap.parse_args();a.output.mkdir(exist_ok=False)
     accepted=json.loads((a.mapping_directory/'accepted-mappings.json').read_text())
     plan=json.loads((a.mapping_directory/'recovery-plan.json').read_text())
@@ -74,10 +75,24 @@ def main():
     # block maps. Read them through the mapped overlay, while keeping baseline
     # and original cached MFT bytes immutable.
     fs.fh=Overlay()
+    blockmap_overrides={};original_reader=None
+    if a.blockmap_candidates:
+        from component_manifest_hashes import OriginalManifestReader
+        from appx_blockmap_candidates import validated_candidate
+        original_reader=OriginalManifestReader(a.baseline,a.mft,layout,a.baseline_manifest)
+        for directory in a.blockmap_candidates:
+            for side in sorted(directory.glob('*.json')):
+                candidate=side.with_suffix('')
+                if not candidate.is_file():continue
+                meta=json.loads(side.read_text())
+                if meta.get('kind')!='whole-file-hash-candidate' or not any((e.get('hash_source') or {}).get('kind')=='original-appx-signature-file-hash' and e['hash_source'].get('part')=='AXBM' for e in meta.get('hash_evidence',[])):continue
+                path,override=validated_candidate(candidate,original_reader,fs,source_frame)
+                if path in blockmap_overrides and blockmap_overrides[path]['data']!=override['data']:raise ValueError('conflicting original signature-bound block map candidates')
+                blockmap_overrides.setdefault(path,override)
     previous=len(accepted);stats=[]
     with (a.output/'iteration-evidence.jsonl').open('x') as log:
         for iteration in range(1,9):
-            groups,counts,errors=targets(fs,a.inventory,stride,unknown,read_known)
+            groups,counts,errors=targets(fs,a.inventory,stride,unknown,read_known,blockmap_overrides)
             print('cross-frame iteration',iteration,'groups',len(groups),flush=True)
             used={fid for m in accepted for fid in m['frames']};proposals=collections.defaultdict(list)
             for f in frames:
@@ -105,6 +120,7 @@ def main():
             stat=dict(iteration=iteration,groups=len(groups),added=len(additions),conflicting_destinations=conflicts,blockmap_statistics=counts,blockmap_errors=errors)
             stats.append(stat);log.flush();print('cross-frame added',len(additions),flush=True)
             if not additions:break
+    if original_reader is not None:original_reader.close()
     (a.output/'accepted-mappings.json').write_text(json.dumps(accepted,indent=2))
     (a.output/'recovery-plan.json').write_text(json.dumps(plan,indent=2))
     summary=dict(accepted_destinations=len(accepted),accepted_bytes=sum(m['length'] for m in accepted),cross_frame_additions=len(accepted)-previous,iterations=stats)

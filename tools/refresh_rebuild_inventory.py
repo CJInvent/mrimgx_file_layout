@@ -33,10 +33,12 @@ def external_attribute_list_records(data,record_size=1024):
 
 def refresh(source,baseline,mft,inventory,manifest,evidence,mapping_directory,output):
     output.mkdir(exist_ok=False);ctx=Context(source,baseline,mft,manifest,evidence,mapping_directory)
-    rows={r['record']:r for r in map(json.loads,inventory.open())};previous=set(rows);counts=collections.Counter();ranges=[]
-    for r in map(json.loads,manifest.open()):
-        if r.get('operation')=='range' and r.get('partition')==2 and r.get('status') in ('unknown-zero-index','unrecoverable','reconstructed-unverified'):
-            ranges.append((r['disk_offset']-ctx.origin,r['disk_offset']+r['length']-ctx.origin,r['status']))
+    with inventory.open() as stream:rows={r['record']:r for r in map(json.loads,stream)}
+    previous=set(rows);counts=collections.Counter();ranges=[]
+    with manifest.open() as stream:
+        for r in map(json.loads,stream):
+            if r.get('operation')=='range' and r.get('partition')==2 and r.get('status') in ('unknown-zero-index','unrecoverable','reconstructed-unverified'):
+                ranges.append((r['disk_offset']-ctx.origin,r['disk_offset']+r['length']-ctx.origin,r['status']))
     ranges.sort();ends=[hi for lo,hi,status in ranges]
     if any(ends[i]<ends[i-1] for i in range(1,len(ends))):raise ValueError('overlapping missing ranges require normalization')
     with mft.open('rb') as stream,mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ) as raw,(output/'reports.jsonl').open('x') as reports:

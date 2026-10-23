@@ -102,7 +102,8 @@ def main():
             if not bases:report['skipped']='no unknown frames';continue
             pieces={base:frame_pieces(extents,base,stride) for base in bases};bases.sort(key=lambda base:pieces[base][0][1]);template=record.open().read();solutions=[];seen=set()
             if len(template)!=size:raise ValueError('short target read')
-            manifest_bound=isinstance(target.get('hash_source'),dict) and target['hash_source'].get('kind')=='original-component-manifest-file-hash'
+            appx_bound=isinstance(target.get('hash_source'),dict) and target['hash_source'].get('kind')=='original-appx-signature-file-hash'
+            manifest_bound=appx_bound or (isinstance(target.get('hash_source'),dict) and target['hash_source'].get('kind')=='original-component-manifest-file-hash')
             def check(assignment):
                 if solutions and manifest_bound and algorithm=='sha256':return
                 if assignment in seen or report['checked']>=a.per_file_budget:return
@@ -139,7 +140,7 @@ def main():
                         for base,sha in zip(bases,solutions[0]):
                             f=frames[sha][0]
                             for off,logical,n in pieces[base]:
-                                data=contents[sha][off:off+n];proof=dict(method='component-manifest-validated-file-slice',record=target['record'],file_size=size,algorithm=algorithm,expected_digest=expected.hex(),file_sha256_observed=file_sha,hash_source=target['hash_source'])
+                                data=contents[sha][off:off+n];proof=dict(method='appx-signature-validated-file-slice' if appx_bound else 'component-manifest-validated-file-slice',record=target['record'],file_size=size,algorithm=algorithm,expected_digest=expected.hex(),file_sha256_observed=file_sha,hash_source=target['hash_source'])
                                 file_slices.append((base,dict(partition=2,reserved=False,block=base//stride,disk_offset=origin+base+off,length=n,source_offset=f[1],stored_length=f[2],source_decoded_length=stride,source_decoded_md5=f[5].hex(),source_decoded_sha256=sha,decoded_slice_offset=off,decoded_md5=hashlib.md5(data).hexdigest(),sha256=hashlib.sha256(data).hexdigest(),evidence=[proof])))
                 for i,base in enumerate(bases):
                     matches={solution[i] for solution in solutions}

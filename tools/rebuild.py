@@ -44,6 +44,24 @@ def corrupted(manifest):
     return bool(hits)
 
 
+def mark_appx_restorations(recovered,verified,written):
+    count=0
+    for side in recovered.rglob('*.json'):
+        path=side.with_suffix('')
+        if not path.is_file():continue
+        meta=json.loads(side.read_text())
+        if not isinstance(meta,dict) or meta.get('kind')!='whole-file-hash-candidate':continue
+        resolved=[r['record'] for r in meta.get('possible_locations',[]) if verified.get(r['record'],{}).get('original_appx_signature_rechecked') and verified[r['record']].get('sha256')==meta.get('sha256')]
+        if not resolved:continue
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=meta['sha256']:raise ValueError('restored Appx candidate changed')
+        meta.update(placement_status='original-appx-signature-and-runlist-validated',vhdx_insertion_authorized=True,vhdx_written_by_rebuild=written,historical_component_version_binding=True,validated_records=resolved,original_appx_bindings=[binding for number in resolved for binding in verified[number].get('original_appx_bindings',[])])
+        meta.setdefault('validation',{}).update(original_appx_signature_rechecked=True,historical_path_binding_proven=True,certificate_trust_asserted=False)
+        for location in meta['possible_locations']:
+            if location.get('record') in resolved:location['placement_confirmed']=True
+        side.write_text(json.dumps(meta,indent=2));count+=1
+    return count
+
+
 class Runner:
     def __init__(self,output,arguments=None):self.output=output;self.events=[];self.serial=0;self.audit=Audit(output,arguments or {})
     def process(self,label,command,allowed=(0,)):
@@ -166,6 +184,7 @@ def main():
         resume=resume_inputs(a.resume_run,current,a.source,original_baseline,original_manifest,evidence,mft,inventory,plan)
         (a.output/'resume-inputs.json').write_text(json.dumps(resume,indent=2));emit('checkpoint-resume','Completed outputs retained; checkpoint additions require independent validation',context=resume)
     initial=pathlib.Path(resume['validation_base']) if resume else current;round_number=0;fixed_point=False;catalog_members_for_rescue=None
+    appx_candidate_directories=[pathlib.Path(p) for p in resume.get('candidate_directories',[])]
     def maps(path):return json.loads((path/'accepted-mappings.json').read_text())
     def stage(tool,args):
         nonlocal current
@@ -186,6 +205,18 @@ def main():
             if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
             if name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
+                if name=='appx':
+                    collected=a.output/f'appx-signatures-{round_number:03d}'
+                    try:
+                        runner.call('collect_appx_signature_hashes',[a.source,baseline,mft,inventory,manifest,evidence,current,collected])
+                        if json.loads((collected/'hash-targets.json').read_text()):
+                            previous_current=current
+                            stage('recover_file_hashes',[a.source,baseline,mft,manifest,evidence,current,collected/'hash-targets.json'])
+                            if current!=previous_current:appx_candidate_directories.append(current/'recovered_files')
+                        common=[a.source,baseline,mft,inventory,manifest,evidence,current]
+                        for directory in appx_candidate_directories:common+=['--blockmap-candidates',directory]
+                    except Exception as error:
+                        _audit_caught(error,locals(),site='appx-signature-discovery');errors.append(dict(tool='appx-signatures',error=str(error)))
                 tool=dict(appx='extend_appx_mappings',**{'signed-pe':'extend_signed_pe_mappings','chromium-streams':'recover_chromium_streams','zip-files':'recover_zip_files'},structured='extend_structured_files',pdf='recover_pdf_xrefs',wal='recover_sqlite_wal',ese='recover_ese_pages',png='recover_png_crc_grid')[name]
                 args=common
                 # Output positional precedes options; stage accepts option
@@ -306,7 +337,7 @@ def main():
     supplemental_proof=a.output/'supplemental-validation/summary.json'
     if supplemental_proof.exists():
         for r in json.loads(supplemental_proof.read_text())['validated_files_or_frames']:
-            if r.get('valid') and r.get('kind')=='component-manifest-file-slices':verified_files[r['record']]=r
+            if r.get('valid') and r.get('kind') in ('component-manifest-file-slices','appx-signature-file-slices'):verified_files[r['record']]=r
     bound_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-inf-catalog-reference-and-named-member'}
     zip_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='zip-original-member-crcs-and-directory'}
     hash_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if e.get('method')=='original-whole-file-hash-completion'}
@@ -338,6 +369,7 @@ def main():
     manifest_records={e['record'] for m in maps(current) for e in m.get('evidence',[]) if isinstance(e.get('hash_source'),dict) and e['hash_source'].get('kind')=='original-component-manifest-file-hash'}
     manifest_records.update(e['record'] for m in supplements.values() for e in m.get('evidence',[]) if e.get('method')=='component-manifest-validated-file-slice')
     mark_manifest_restorations(a.output/'recovered_files',verified_files,manifest_records,not a.search_only)
+    mark_appx_restorations(a.output/'recovered_files',verified_files,not a.search_only)
     for path in protected:
         if (path.stat().st_size,path.stat().st_mtime_ns)!=stats[str(path.resolve())]:raise ValueError('protected input changed')
     summary=dict(schema_version=1,corruption_detected=True,vhdx=str(revised.resolve()) if not a.search_only else None,search_only=a.search_only,accepted_mappings=len(maps(current)),supplemental_destinations=len(supplements),supplemental_bytes=sum(m['length'] for m in supplements.values()),mapping_directory=str(current.resolve()),recovered_files=str((a.output/'recovered_files').resolve()),rounds=round_number,no_additions_in_last_round=fixed_point,all_requested_stages_succeeded=not errors,stage_errors=errors,enabled_stages=sorted(requested),excluded_stages=sorted(set(DEFAULT_STAGES.split(','))-requested),protected_input_stats_unchanged=True,limits=dict(per_file_budget=a.per_file_budget,rounds=a.rounds,metadata_identity=a.metadata_identity),scope='Unresolved placements are exported separately. Full-frame residual accounting retains complete enclosing frames for partial validated slices, whose known disk ranges are listed separately. Convergence means no further additions from the implemented bounded searches, never universal unmappability or a complete/bootable filesystem.')

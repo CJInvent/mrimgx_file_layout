@@ -190,6 +190,15 @@ directory extents absent from the initial inventory. These newly visible files
 join the normal hash, format and runlist searches automatically; the original
 inventory and cached MFT remain unchanged.
 
+The Appx stage also reads original `AppxSignature.p7x` records and verifies their
+CMS signatures with Windows CryptoAPI. Signed AXBM, AXCI and AXCT hashes can
+rescue missing block maps, code-integrity catalogs and content-type files. Only
+their verified file slices are placed; surrounding source bytes stay unresolved.
+Recovered block maps can then unlock more Appx file-block matches. Before those
+matches authorize writes, independent checks repeat the package signature,
+original file/path/sequence binding, source-piece reconstruction, XML block hash
+and NTFS runlist projection. No certificate-chain trust claim is made.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a
