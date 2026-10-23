@@ -46,12 +46,13 @@ def enrich(recovered,baseline,mft,inventory,layout):
                     continue
         count=0
         for side,info in files:
-            candidates=[];original=(info.get('original_filename') or '').casefold();suffix=info['file_type']
+            candidates=list(info.get('possible_locations',[]));seen={json.dumps(c,sort_keys=True) for c in candidates};original=(info.get('original_filename') or '').casefold();suffix=info['file_type']
             for candidate in bysize[info['bytes']]:
                 names=candidate['names']
                 if original and not any(name.casefold()==original for name in names):continue
                 if not original and not any(pathlib.PureWindowsPath(name).suffix.casefold()=='.'+suffix for name in names):continue
-                candidates.append(dict(candidate,matching_basis='embedded original name and exact size' if original else 'file type and exact size',placement_confirmed=False))
+                location=dict(candidate,matching_basis='embedded original name and exact size' if original else 'file type and exact size',placement_confirmed=False);key=json.dumps(location,sort_keys=True)
+                if key not in seen:candidates.append(location);seen.add(key)
             info['possible_locations']=candidates;info['metadata_scope']='Candidates only. File names, lengths and runlists do not independently authorize a filesystem placement.';side.write_text(json.dumps(info,indent=2));count+=bool(candidates)
     finally:cache.close();volume.fh.close()
     result=dict(files_examined=len(files),files_with_candidate_metadata=count,bytes_unchanged=True,baseline_and_mft_read_only=True);(recovered/'metadata-enrichment.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)

@@ -42,7 +42,7 @@ from test_ntfs_metadata_links import NtfsMetadataLinkTests
 from test_indexed_reconstruction import IndexedReconstructionTests
 from test_archive_member_rescue import ArchiveMemberRescueTests
 from test_orphan_bit_frames import OrphanBitFrameTests
-from test_ntfs_compressed_fragments import NtfsCompressedFragmentTests
+from test_ntfs_compressed_fragments import NtfsCompressedFragmentTests,MetadataEnrichmentTests
 
 
 class ForensicTests(unittest.TestCase):
