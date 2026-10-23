@@ -268,6 +268,20 @@ VHDX insertion. Unknown compressed bytes preserve only a decoded prefix, while
 encrypted members and descriptor-based local records are reported as skipped.
 The default local-header scan bound is 256 MiB per archive and bound hits are logged.
 
+Archive export also inspects known original file headers and the bounded end-record
+region of affected streams, regardless of filename extension. This includes XLSB,
+self-extracting installers and appended ZIP metadata in otherwise unrelated file
+types. Unknown placeholders never nominate content. Classic prefixed ZIP directories
+can be read using the adjustment derived from the original end record, with directory
+and local-header bounds checked against the original stream. This permits member
+export from known trailing overlays as well, such as an installer's certificate
+after the ZIP end record; this does not establish certificate trust. End-record
+discovery remains bounded to the final 65,557 bytes. This permits member
+export and original-index-MD5 donor nomination; the ZIP placement stage still requires
+its stricter original file-boundary and independent crossing-CRC proofs. Executable
+stubs and recovered programs are never launched. Detection and per-member metadata
+record whether the archive was nominated by suffix or known source content.
+
 The external residual export also probes cluster-aligned LZNT1 sequences with
 the bounded Windows decoder. Sixteen individually checked complete chunks can
 be preserved as a decoded 64 KiB fragment with source packet, compressed offset,

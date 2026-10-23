@@ -13,15 +13,15 @@ from indexed_donor_reconstruction import OriginalIndex,SourceParts
 from placement_payload import assemble_source_parts
 from rebuild_audit import caught,emit
 
-ARCHIVES={'.zip','.docx','.xlsx','.pptx','.docm','.xlsm','.pptm','.jar','.vsix','.nupkg','.appx','.msix'}
+from zip_directory import ARCHIVES,archive_nomination
 
 
 def archive_members(ctx,record):
     from zip_directory import directory_bounds
-    size=record.size();holes=ctx.holes(record);stream=record.open();bounds=directory_bounds(stream,size,holes);n=bounds['entries'];cd_off=bounds['directory_offset']
+    size=record.size();holes=ctx.holes(record);stream=record.open();bounds=directory_bounds(stream,size,holes,allow_prefix=True);n=bounds['entries'];cd_off=bounds['directory_offset']
     result=[]
     with zipfile.ZipFile(stream) as archive:
-        if len(archive.infolist())!=n:raise ValueError('original archive directory member count differs')
+        if len(archive.infolist())!=n or archive.start_dir!=cd_off:raise ValueError('original archive directory member count/bounds differ')
         for info in archive.infolist():
             if info.flag_bits&1 or info.header_offset<0:continue
             stream.seek(info.header_offset);header=stream.read(30)
@@ -82,7 +82,7 @@ def main():
             if size<ctx.stride:continue
             metadata[number]=(names,size);by_size[size].add(number)
             for name in names:by_name[name.casefold()].add(number)
-            if any(pathlib.PureWindowsPath(name).suffix.casefold() in ARCHIVES for name in names):archive_records.add(number)
+            if any(pathlib.PureWindowsPath(name).suffix.casefold() in ARCHIVES|{'.exe'} for name in names):archive_records.add(number)
     for number,record in wanted_records.items():
         metadata[number]=(record.filenames(ignore_dos=True),record.size())
         for name in metadata[number][0]:by_name[name.casefold()].add(number)
@@ -112,8 +112,8 @@ def main():
     wanted_members=collections.defaultdict(list)
     for number,items in owners.items():
         if all(base in solutions for base,pieces in items):continue
-        if not any(pathlib.PureWindowsPath(n).suffix.casefold() in ARCHIVES for n in metadata[number][0]):continue
         try:
+            if not any(archive_nomination(ctx,wanted_records[number],name) for name in metadata[number][0]):continue
             for member in archive_members(ctx,wanted_records[number]):
                 for base,pieces in items:
                     if base not in solutions and all(member['start']<=logical and logical+n<=member['stop'] for off,logical,n in pieces):wanted_members[member['key']].append((number,base,pieces,member['start']))

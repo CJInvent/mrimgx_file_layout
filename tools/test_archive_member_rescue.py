@@ -25,6 +25,55 @@ def local_fixture(entries):
 
 
 class ArchiveMemberRescueTests(unittest.TestCase):
+    def test_content_nomination_ignores_suffix_and_unknown_placeholders(self):
+        from types import SimpleNamespace
+        from zip_directory import archive_nomination
+        stream=io.BytesIO()
+        with zipfile.ZipFile(stream,'w') as archive:archive.writestr('metadata',b'original metadata')
+        raw=stream.getvalue();record=SimpleNamespace(header=SimpleNamespace(Flags=1),resident=False,size=lambda:len(raw),open=lambda:io.BytesIO(raw))
+        ctx=SimpleNamespace(holes=lambda r:[])
+        self.assertEqual(archive_nomination(ctx,record,'model.unknown'),'known-local-header')
+        ctx.holes=lambda r:[(0,len(raw),0)]
+        self.assertIsNone(archive_nomination(ctx,record,'model.unknown'))
+        self.assertEqual(archive_nomination(ctx,record,'workbook.xlsb'),'filename-suffix')
+
+    def test_prefixed_archive_members_use_original_adjusted_offsets(self):
+        from types import SimpleNamespace
+        from recover_indexed_donor_frames import archive_members
+        from zip_directory import directory_bounds,archive_nomination
+        stream=io.BytesIO()
+        with zipfile.ZipFile(stream,'w',zipfile.ZIP_DEFLATED) as archive:archive.writestr('payload',b'original contents'*100)
+        prefix=b'MZ'+b'original executable stub'*80;raw=prefix+stream.getvalue()
+        record=SimpleNamespace(size=lambda:len(raw),open=lambda:io.BytesIO(raw),segment=7,header=SimpleNamespace(Flags=1))
+        ctx=SimpleNamespace(holes=lambda r:[])
+        self.assertEqual(archive_nomination(ctx,record,'installer.exe'),'known-end-record')
+        with self.assertRaises(ValueError):directory_bounds(io.BytesIO(raw),len(raw))
+        bounds=directory_bounds(io.BytesIO(raw),len(raw),allow_prefix=True)
+        self.assertEqual(bounds['prefix_bytes'],len(prefix))
+        row=archive_members(ctx,record)[0];out=io.BytesIO()
+        state=decode_member(io.BytesIO(raw),row['start'],row['key'][3],row['key'][4],row['key'][2],row['key'][1],[],out,10000)
+        self.assertTrue(state['valid']);self.assertEqual(out.getvalue(),b'original contents'*100)
+        ctx.holes=lambda r:[(bounds['directory_offset'],len(raw),0)]
+        self.assertIsNone(archive_nomination(ctx,record,'installer.exe'))
+        with self.assertRaises(ValueError):archive_members(ctx,record)
+
+    def test_wrapped_archive_known_trailing_overlay_is_external_only(self):
+        from types import SimpleNamespace
+        from recover_indexed_donor_frames import archive_members
+        from zip_directory import directory_bounds,archive_nomination
+        stream=io.BytesIO()
+        with zipfile.ZipFile(stream,'w') as archive:archive.writestr('payload',b'original body')
+        raw=b'MZ executable stub'+stream.getvalue()+b'known certificate overlay'
+        record=SimpleNamespace(size=lambda:len(raw),open=lambda:io.BytesIO(raw),segment=7,header=SimpleNamespace(Flags=1));ctx=SimpleNamespace(holes=lambda r:[])
+        self.assertEqual(archive_nomination(ctx,record,'installer.exe'),'known-end-record')
+        self.assertEqual(len(archive_members(ctx,record)),1)
+        bounds=directory_bounds(io.BytesIO(raw),len(raw),allow_prefix=True)
+        self.assertEqual(bounds['trailing_bytes'],len(b'known certificate overlay'))
+        with self.assertRaises(ValueError):directory_bounds(io.BytesIO(raw),len(raw))
+        ctx.holes=lambda r:[(len(raw)-1,len(raw),0)]
+        self.assertIsNone(archive_nomination(ctx,record,'installer.exe'))
+        with self.assertRaises(ValueError):archive_members(ctx,record)
+
     def test_surviving_zip64_directory_nominates_original_members(self):
         from types import SimpleNamespace
         from recover_indexed_donor_frames import archive_members
@@ -85,14 +134,14 @@ class ArchiveMemberRescueTests(unittest.TestCase):
         rows,scan=local_members(io.BytesIO(raw),len(raw),maximum_scan_bytes=10);self.assertEqual(rows,[]);self.assertTrue(scan['scan_bound_reached'])
         with self.assertRaises(ValueError):local_members(io.BytesIO(raw),len(raw),maximum_scan_bytes=0)
 
-    def fallback_export(self,entries,extra_holes=()):
+    def fallback_export(self,entries,extra_holes=(),original_path='original\\damaged.docx'):
         import tempfile,pathlib,json,hashlib
         from types import SimpleNamespace
         from unittest.mock import patch
         from rescue_archive_members import main
         raw,directory=local_fixture(entries)
         with tempfile.TemporaryDirectory() as temporary:
-            root=pathlib.Path(temporary);source=root/'source';source.write_bytes(b'SOURCE');baseline=root/'baseline';baseline.write_bytes(b'BASELINE');inventory=root/'inventory';inventory.write_text(json.dumps(dict(record=99,path='original\\damaged.docx'))+'\n');output=root/'output'
+            root=pathlib.Path(temporary);source=root/'source';source.write_bytes(b'SOURCE');baseline=root/'baseline';baseline.write_bytes(b'BASELINE');inventory=root/'inventory';inventory.write_text(json.dumps(dict(record=99,path=original_path))+'\n');output=root/'output'
             record=SimpleNamespace(size=lambda:len(raw),open=lambda:io.BytesIO(raw),segment=99,header=SimpleNamespace(SequenceNumber=3))
             ctx=SimpleNamespace(fs=SimpleNamespace(mft=SimpleNamespace(get=lambda n:record)),holes=lambda r:[(directory,len(raw),0)]+list(extra_holes),close=lambda:None)
             argv=['rescue_archive_members.py']+list(map(str,[source,baseline,root/'mft',inventory,root/'manifest',root/'evidence',root/'mapping',output]))
@@ -110,6 +159,13 @@ class ArchiveMemberRescueTests(unittest.TestCase):
     def test_local_payload_hole_retains_only_known_prefix(self):
         name='payload.bin';data=bytes(range(256))*4;start=30+len(name);artifacts,summary=self.fallback_export([(name,data)],[(start+100,start+200,0)])
         self.assertEqual(len(artifacts),1);meta,body=artifacts[0];self.assertFalse(meta['valid']);self.assertEqual(body,data[:100]);self.assertEqual(summary['counts']['local_header_uncertain_members'],1)
+
+    def test_unknown_suffix_local_members_are_discovered_by_content(self):
+        artifacts,summary=self.fallback_export([('metadata',b'known original bytes')],original_path='original\\model.unlisted')
+        self.assertEqual(len(artifacts),1);meta,body=artifacts[0]
+        self.assertTrue(meta['valid']);self.assertFalse(meta['vhdx_insertion_authorized'])
+        self.assertEqual(meta['archive_nomination'],'known-local-header')
+        self.assertEqual(summary['counts']['nomination_known-local-header'],1)
 
     def decode(self,data,encoded=None,holes=(),limit=100000,crc=None,method=8):
         if encoded is None:

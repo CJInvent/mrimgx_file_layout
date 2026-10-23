@@ -9,6 +9,7 @@ from rebuild_context import Context
 from recover_indexed_donor_frames import archive_members,ARCHIVES
 from rebuild_audit import emit,caught
 from zip_local_members import local_members
+from zip_directory import archive_nomination
 
 
 def decode_member(stream,start,length,method,expected_size,expected_crc,holes,output,limit):
@@ -50,8 +51,13 @@ def main():
     try:
         with (a.output/'member-audit.jsonl').open('x',encoding='utf-8') as audit,a.inventory.open() as inventory:
             for row in map(json.loads,inventory):
-                if pathlib.PureWindowsPath(row.get('path') or '').suffix.casefold() not in ARCHIVES:continue
+                try:
+                    record=ctx.fs.mft.get(row['record']);nomination=archive_nomination(ctx,record,row.get('path') or '')
+                except Exception as error:
+                    caught(error,dict(record=row['record']),expected=True,site='archive-content-nomination');continue
+                if not nomination:continue
                 number=row['record'];counts['archives_examined']+=1;local=False;directory_error=None
+                counts['nomination_'+nomination]+=1
                 try:record=ctx.fs.mft.get(number);members=archive_members(ctx,record);holes=ctx.holes(record)
                 except Exception as error:
                     caught(error,dict(record=number),expected=True,site='archive-member-directory');counts['unreadable_directories']+=1;directory_error=str(error);audit.write(json.dumps(dict(record=number,path=row.get('path'),error=directory_error,kind='archive-directory-error'))+'\n');audit.flush()
@@ -82,6 +88,7 @@ def main():
                     with target.open('xb') as output:result=decode_member(record.open(),member['start'],compressed,method,size,crc,holes,output,min(a.maximum_member_bytes,a.maximum_total_bytes-counts['exported_bytes']))
                     meta=dict(kind='original-archive-member' if result['valid'] else 'uncertain-archive-member-prefix',archive_record=number,archive_sequence=record.header.SequenceNumber,archive_path=row.get('path'),member_name=name,original_crc32=crc,original_size=size,compressed_start=member['start'],compressed_length=compressed,compression_method=method,filesystem_placement_unknown=True,vhdx_insertion_authorized=False,possible_locations=[dict(archive_record=number,archive_path=row.get('path'),member_name=name,placement_confirmed=False)],**result)
                     meta['original_member_directory_binding_proven']=not local
+                    meta['archive_nomination']=nomination
                     if local:
                         meta.update(kind='local-archive-member-candidate' if result['valid'] else 'uncertain-local-archive-member-prefix',directory_error=directory_error,local_header_offset=member['local_header_offset'],local_header_bytes=member['local_header_bytes'],local_header_sha256=member['local_header_sha256'],scope='CRC/size and complete deflate boundary validate the local record only. Original active directory membership is unknown; this export never authorizes VHDX insertion.')
                         counts['local_header_valid_members' if result['valid'] else 'local_header_uncertain_members']+=1
