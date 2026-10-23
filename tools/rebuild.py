@@ -11,7 +11,7 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
+DEFAULT_STAGES='residual-audit,bit-repair,indexed-donors,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
 ACTIVE_RUNNER=None
 
 
@@ -100,6 +100,7 @@ def main():
     ap.add_argument('--qemu-img',type=pathlib.Path,required=True);ap.add_argument('--seven-zip',type=pathlib.Path,required=True)
     ap.add_argument('--bit-repair-exe',type=pathlib.Path,help='defaults to repair_frame_bits.exe next to the native converter')
     ap.add_argument('--reuse-bit-negative-attempts',type=pathlib.Path,help='reuse completed zero-match native tests only with identical encoded input, original MD5, decoded length and full byte coverage')
+    ap.add_argument('--reuse-baseline-validation',type=pathlib.Path,help='reuse a successful full native readback proof only with identical source/baseline stats, source plan and verifier')
     ap.add_argument('--stages',default=DEFAULT_STAGES);ap.add_argument('--rounds',type=int,default=0,help='0 repeats until no new placements; a bound is reported as a limit')
     ap.add_argument('--per-file-budget',type=int,default=300000);ap.add_argument('--metadata-identity',action='store_true',help='also permit separately labeled filename/size/exact-time duplicate inferences')
     ap.add_argument('--existing-clone',type=pathlib.Path);ap.add_argument('--clone-manifest',type=pathlib.Path);ap.add_argument('--previous-refinement',type=pathlib.Path);ap.add_argument('--previous-validation',type=pathlib.Path)
@@ -136,6 +137,10 @@ def main():
     evidence=a.evidence
     if evidence is None:evidence=runner.call('forensic_residuals',[a.source,a.plan,manifest,a.output/'evidence'],a.output/'evidence')
     elif json.loads((evidence/'input-plan.json').read_text())!=plan:raise ValueError('evidence belongs to another plan')
+    runner.call('verify_index_catalog',[a.source,evidence,manifest,a.output/'original-index-catalog-validation.json'])
+    baseline_args=[a.source,baseline,evidence,a.output/'native-baseline-validation']
+    if a.reuse_baseline_validation:baseline_args+=['--reuse',a.reuse_baseline_validation]
+    runner.call('verify_original_baseline',baseline_args)
     original_baseline=baseline;original_manifest=manifest;revised=a.existing_clone or a.output/'rebuilt.vhdx';copylog=a.clone_manifest or a.output/'clone-manifest.jsonl';active_previous=a.previous_refinement;clone_ready=bool(a.existing_clone);errors=[];bit_output=None;audit_output=None
     if 'residual-audit' in requested:
         audit_output=a.output/'residual-audit'
@@ -156,20 +161,14 @@ def main():
                 # is usable; never apply an unvalidated metadata repair.
                 runner.call('validate_supplemental_files',[a.source,original_baseline,a.mft or '-',original_manifest,evidence,a.mapping_directory or '-',bit_output/'supplemental-placements.json',a.output/'indexed-bit-validation'])
                 if not clone_ready:runner.call('clone_sparse_file',[original_baseline,revised,copylog]);clone_ready=True
-                empty=a.output/'empty-mappings.json';empty.write_text('[]');early=a.output/'metadata-repair-refinement.jsonl';args=[a.source,original_baseline,revised,copylog,manifest,(a.mapping_directory/'accepted-mappings.json') if a.mapping_directory else empty,early,'--supplemental',bit_output/'supplemental-placements.json']
+                empty=a.output/'empty-mappings.json';empty.write_text('[]');early=a.output/'metadata-repair-refinement.jsonl';args=[a.source,original_baseline,revised,copylog,manifest,empty,early,'--supplemental',bit_output/'supplemental-placements.json']
                 if active_previous:args+=['--previous-refinement',active_previous]
                 runner.call('refine_vhdx',args);active_previous=early;baseline=revised
                 # A separate analysis manifest makes the proven original
                 # frame readable to every later stage. The original manifest
                 # remains the authority for write restrictions/preservation.
-                repaired={(m['partition'],m['disk_offset'],m['length']) for m in repairs}
-                analysis_manifest=a.output/'analysis-manifest.jsonl'
-                with original_manifest.open() as inp,analysis_manifest.open('x') as out:
-                    for line in inp:
-                        row=json.loads(line)
-                        if row.get('operation')=='range' and (row.get('partition'),row.get('disk_offset'),row.get('length')) in repaired:row['status']='recovered-original-index-bit-repair'
-                        out.write(json.dumps(row)+'\n')
-                manifest=analysis_manifest
+                from indexed_donor_reconstruction import analysis_manifest as split_manifest
+                analysis=a.output/'analysis-manifest.jsonl';split_manifest(original_manifest,repairs,analysis,status='recovered-original-index-bit-repair');manifest=analysis
         except Exception as e:
             _audit_caught(e, locals(), expected=False, site='rebuild.py:120')
             errors.append(dict(tool='bit-repair',error=str(e)))
@@ -196,15 +195,51 @@ def main():
         except Exception as e:
             _audit_caught(e, locals(), expected=False, site='rebuild.py:135')
             errors.append(dict(tool=tool,error=str(e)))
+    known_index_reconstructions={};known_index_path=None
+    def apply_index_reconstructions(path,label):
+        nonlocal baseline,manifest,clone_ready,active_previous,known_index_path
+        requests=json.loads(path.read_text());pending=[]
+        for m in requests:
+            key=(m['disk_offset'],m['length'])
+            if key in known_index_reconstructions:
+                if known_index_reconstructions[key]['sha256']!=m['sha256']:raise ValueError('conflicting original-index reconstructed frames')
+            else:pending.append(m)
+        if not pending:return
+        runner.call('validate_supplemental_files',[a.source,baseline,mft,manifest,evidence,current,path,a.output/(label+'-validation')])
+        for m in pending:known_index_reconstructions[(m['disk_offset'],m['length'])]=m
+        known_index_path=a.output/(label+'-known-reconstructions.json');known_index_path.write_text(json.dumps(list(known_index_reconstructions.values()),indent=2))
+        if a.search_only:return
+        if not clone_ready:runner.call('clone_sparse_file',[original_baseline,revised,copylog]);clone_ready=True
+        already=[]
+        if active_previous:
+            for row in map(json.loads,active_previous.open()):
+                if row.get('operation')=='placed':already.append({k:v for k,v in row.items() if k!='operation'})
+        applied=a.output/(label+'-already-applied-mappings.json');applied.write_text(json.dumps(already));journal=a.output/(label+'-refinement.jsonl');args=[a.source,original_baseline,revised,copylog,original_manifest,applied,journal,'--supplemental',path]
+        if active_previous:args+=['--previous-refinement',active_previous]
+        runner.call('refine_vhdx',args);active_previous=journal;baseline=revised
+        from indexed_donor_reconstruction import analysis_manifest
+        analysis=a.output/(label+'-analysis-manifest.jsonl');analysis_manifest(manifest,pending,analysis);manifest=analysis
+    inherited_index=[]
+    if a.previous_refinement:
+        for row in map(json.loads,a.previous_refinement.open()):
+            if row.get('operation')=='placed-supplement' and row.get('source_encoding')=='original-index-md5-source-parts':inherited_index.append({k:v for k,v in row.items() if k!='operation'})
+    for path in map(pathlib.Path,resume.get('supplemental_paths',[])):
+        inherited_index.extend(m for m in json.loads(path.read_text()) if m.get('source_encoding')=='original-index-md5-source-parts')
+    if inherited_index:
+        inherited=a.output/'inherited-index-reconstructions.json';inherited.write_text(json.dumps(inherited_index,indent=2));apply_index_reconstructions(inherited,'inherited-index-reconstructions')
     while not a.rounds or round_number<a.rounds:
-        before=len(maps(current));round_number+=1;print(json.dumps(dict(round=round_number,mappings=before)),flush=True)
+        before=len(maps(current))+len(known_index_reconstructions);round_number+=1;print(json.dumps(dict(round=round_number,mappings=len(maps(current)),reconstructed_indexed_frames=len(known_index_reconstructions))),flush=True)
         refreshed=a.output/f'inventory-{round_number:03d}'
         runner.call('refresh_rebuild_inventory',[a.source,baseline,mft,inventory,manifest,evidence,current,refreshed])
         inventory=refreshed/'affected-files.jsonl'
         for name in DEFAULT_STAGES.split(','):
             if name not in requested or name in ('residual-audit','bit-repair','metadata-rescue'):continue
             common=[a.source,baseline,mft,inventory,manifest,evidence,current]
-            if name=='ntfs-metadata':stage('recover_ntfs_metadata_links',[a.source,baseline,mft,manifest,evidence,current])
+            if name=='indexed-donors':
+                out=a.output/f'{runner.serial+1:04d}-recover_indexed_donor_frames';args=[a.source,baseline,mft,inventory,manifest,evidence,current,out,'--per-file-budget',a.per_file_budget]
+                if known_index_path:args+=['--known-reconstructions',known_index_path]
+                runner.call('recover_indexed_donor_frames',args);current=out;apply_index_reconstructions(out/'supplemental-placements.json',f'indexed-donors-{round_number:03d}')
+            elif name=='ntfs-metadata':stage('recover_ntfs_metadata_links',[a.source,baseline,mft,manifest,evidence,current])
             elif name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
                 if name=='appx':
                     collected=a.output/f'appx-signatures-{round_number:03d}'
@@ -296,7 +331,7 @@ def main():
                 except Exception as e:
                     _audit_caught(e, locals(), expected=False, site='rebuild.py:199')
                     errors.append(dict(tool=name,error=str(e)))
-        if len(maps(current))==before:fixed_point=True;break
+        if len(maps(current))+len(known_index_reconstructions)==before:fixed_point=True;break
     validated=a.output/'validated-mappings';runner.call('validate_mapped_files',[a.source,baseline,mft,inventory,evidence/'layout.json',initial,current,validated,'--baseline-manifest',manifest]);current=validated
     supplements={}
     if a.previous_refinement:
@@ -304,6 +339,7 @@ def main():
             if row.get('operation')=='placed-supplement':supplements[(row['disk_offset'],row['length'])]={k:v for k,v in row.items() if k!='operation'}
     paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))+list(a.output.glob('*-recover_file_hashes/supplemental-placements.json'))
     paths += [pathlib.Path(p) for p in resume.get('supplemental_paths',[])]
+    paths += list(a.output.glob('*-recover_indexed_donor_frames/supplemental-placements.json'))
     if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
     for path in paths:
         for m in json.loads(path.read_text()):
@@ -326,6 +362,7 @@ def main():
     rescue_args=[evidence,current/'accepted-mappings.json',a.output/'recovered_files']
     if catalog_members_for_rescue:rescue_args+=['--catalog-members',catalog_members_for_rescue]
     runner.call('rescue_unplaced_files',rescue_args)
+    if 'zip-files' in requested and not a.search_only:runner.call('rescue_archive_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.output/'recovered_files/archive-members'])
     if 'metadata-rescue' in requested:runner.call('rescue_unreadable_records',[a.source,baseline,mft,manifest,evidence,current,a.output/'recovered_files/metadata-records'])
     shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')
     if audit_output and (audit_output/'partial-decoded.bin').exists():
@@ -376,6 +413,7 @@ def main():
         if (path.stat().st_size,path.stat().st_mtime_ns)!=stats[str(path.resolve())]:raise ValueError('protected input changed')
     summary=dict(schema_version=1,corruption_detected=True,vhdx=str(revised.resolve()) if not a.search_only else None,search_only=a.search_only,accepted_mappings=len(maps(current)),supplemental_destinations=len(supplements),supplemental_bytes=sum(m['length'] for m in supplements.values()),mapping_directory=str(current.resolve()),recovered_files=str((a.output/'recovered_files').resolve()),rounds=round_number,no_additions_in_last_round=fixed_point,all_requested_stages_succeeded=not errors,stage_errors=errors,enabled_stages=sorted(requested),excluded_stages=sorted(set(DEFAULT_STAGES.split(','))-requested),protected_input_stats_unchanged=True,limits=dict(per_file_budget=a.per_file_budget,rounds=a.rounds,metadata_identity=a.metadata_identity),scope='Unresolved placements are exported separately. Full-frame residual accounting retains complete enclosing frames for partial validated slices, whose known disk ranges are listed separately. Convergence means no further additions from the implemented bounded searches, never universal unmappability or a complete/bootable filesystem.')
     summary.update(evidence_directory=str(evidence.resolve()),mft=str(mft.resolve()),inventory=str(inventory.resolve()),baseline=str(original_baseline.resolve()),baseline_manifest=str(original_manifest.resolve()))
+    summary.update(reconstructed_indexed_frames=len(known_index_reconstructions),reconstructed_indexed_bytes=sum(m['length'] for m in known_index_reconstructions.values()),index_reconstructions_materialized_for_later_searches=not a.search_only)
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary,indent=2),flush=True);return 2
 
 

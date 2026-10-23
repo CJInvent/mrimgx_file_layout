@@ -39,6 +39,8 @@ from recover_zip_files import validate_archive,original_crossing_crcs,independen
 from rebuild_audit import Audit,caught,emit
 from rebuild import Runner
 from test_ntfs_metadata_links import NtfsMetadataLinkTests
+from test_indexed_reconstruction import IndexedReconstructionTests
+from test_archive_member_rescue import ArchiveMemberRescueTests
 
 
 class ForensicTests(unittest.TestCase):

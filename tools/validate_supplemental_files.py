@@ -12,11 +12,16 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('source','baseline','mft','baseline_manifest','evidence','mapping_directory','supplemental','output'):ap.add_argument(name,type=pathlib.Path)
     a=ap.parse_args();a.output.mkdir(exist_ok=False);ctx=None;requests=json.loads(a.supplemental.read_text());db=sqlite3.connect((a.evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);files={};catalogs={};results=[]
-    original_manifest_reader=None
+    original_manifest_reader=None;original_index=None
     with a.source.open('rb') as source:
         for m in requests:
             content=payload(source,m)
             for e in m['evidence']:
+                if e['method']=='original-index-md5-source-parts-reconstruction':
+                    from indexed_donor_reconstruction import OriginalIndex
+                    if original_index is None:original_index=OriginalIndex(a.source,a.evidence)
+                    if original_index.validate(m)!=content:raise ValueError('independent original-index reconstruction differs')
+                    results.append(dict(kind='original-index-donor-reconstruction',disk_offset=m['disk_offset'],bytes=len(content),sha256=m['sha256'],original_index_md5_rechecked=True,all_parts_redecoded_from_original_source=True,valid=True));continue
                 if e['method']=='unique-original-index-md5-bit-repair':
                     entry=db.execute('SELECT source_offset,stored_length,digest,decoded_length FROM entries WHERE partition=? AND block=? AND disk_offset=?',(m['partition'],e['block'],m['disk_offset'])).fetchall()
                     if len(entry)!=1 or entry[0]!=(m['source_offset'],m['stored_length'],bytes.fromhex(e['original_md5']),m['length']) or hashlib.md5(content).hexdigest()!=e['original_md5']:raise ValueError('repair does not match original source index')
@@ -60,6 +65,7 @@ def main():
         is_appx=any(e['method']=='appx-signature-validated-file-slice' for e in proofs)
         results.append(dict(kind='appx-signature-file-slices' if is_appx else 'component-manifest-file-slices' if is_component else 'catalog-file-slices',record=number,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),original_appx_signature_rechecked=is_appx,original_appx_bindings=[e['hash_source'] for e in proofs if e['method']=='appx-signature-validated-file-slice'],original_manifest_rechecked=is_component,original_manifest_bindings=[e['hash_source'] for e in proofs if e['method']=='component-manifest-validated-file-slice'],catalog_signature_hash_rechecked=not is_component and not is_appx,valid=True))
     if original_manifest_reader is not None:original_manifest_reader.close()
+    if original_index is not None:original_index.close()
     if ctx is not None:ctx.close()
     db.close()
     result=dict(valid=True,supplemental_destinations=len(requests),supplemental_bytes=sum(m['length'] for m in requests),validated_files_or_frames=results,scope='Only the validated source slices may be written. Other bytes in their enclosing frames retain unresolved placement status.');(a.output/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)

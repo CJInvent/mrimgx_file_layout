@@ -215,6 +215,33 @@ destination. `placed-content-validation/summary.json` and `range-checks.jsonl`
 record all checks. Baseline extent preservation and container checks remain
 separate stages.
 
+The `indexed-donors` stage can reconstruct a complete missing indexed frame
+from slices of other intact source packets, including packets already used by
+native conversion. Matching filenames, sizes or ZIP member metadata nominate
+donors; only the full original target index MD5 authorizes the exact original
+physical address. Independent validation rereads the raw index entry and all
+source packets. Cached reconstructed bodies never authorize placement. Proven
+frames are materialized in the working clone before later searches and count
+toward convergence, so they can unlock additional hash and metadata recovery.
+
+`native-baseline-validation` reads every incorporated native block back from
+the baseline and checks its recorded digest. An optional
+`--reuse-baseline-validation SUMMARY_JSON` accepts a previous successful proof
+only for identical source/baseline paths, sizes and write times, source plan and
+verifier code. Every declared added range still gets fresh source readback.
+
+The ZIP stage also exports members of affected archives under
+`recovered_files/archive-members`, using generated filenames and JSON sidecars.
+Stored and raw-deflate members are decoded independently; a bad member does
+not stop later members. Unknown compressed bytes stop decoding immediately.
+CRC-valid members, CRC-failing output and incomplete decoded prefixes carry
+distinct validation metadata. Original member names, CRCs, sizes, source
+archive record/sequence/path and compressed offsets remain auditable; none
+of these extracted files is inserted into the VHDX. Defaults bound output to
+16 GiB per member and 256 GiB overall; bound hits and unsupported/encrypted
+members are logged. Exact source frame hashes do not guarantee that the
+original archive itself was valid; pre-existing CRC errors remain explicit.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a
