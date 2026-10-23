@@ -69,6 +69,19 @@ Source order can nominate combinations only; it never authorizes a placement.
 MFT nomination scans restore and validate sector update-sequence fixups before
 reading filenames or sizes. A sector-trailer stamp must not turn an ordinary
 installer/catalog size into an enormous value and silently exclude it.
+Competing Chromium/Appx/PE frame candidates are checked against the union of
+their bounded original file constraints. Resolution requires one content
+digest satisfying every constraint from at least two independent NTFS records;
+votes, repeated small icons and source ordering cannot choose a whole frame.
+Unavailable or contradictory constraints preserve the ambiguity. The original
+proposals and a separate `anchor-consensus.json` report remain available.
+Managed satellite resource DLL anchors also require their parsed .NET assembly
+name and culture to match the original filename and culture directory. Matching
+filename, size, version and a self-consistent signed image digest do not establish
+the original language variant by themselves. Parsing never loads the assembly.
+Chakra discovery also tests shorter arrays of at least three descending child
+pointers, retaining the requirement for two disjoint arrays agreeing on an
+address and surviving body masks.
 The `metadata-rescue` stage also preserves complete file data behind malformed
 UTF-16 filenames outside the image. It keeps original filename bytes, record
 references, runlists and matching surviving directory names in JSON. Only a

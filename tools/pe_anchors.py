@@ -7,6 +7,28 @@ from rebuild_audit import caught as _audit_caught
 import collections
 import hashlib
 import struct
+import pathlib
+import re
+import locale
+
+
+def resource_culture_binding(data,path,filename):
+    """Bind a managed satellite assembly to an original culture directory."""
+    if not filename.casefold().endswith('.resources.dll') or '<' in path or '>' in path:return None
+    culture=pathlib.PureWindowsPath(path).parent.name
+    if not re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*',culture):return None
+    known={name.replace('_','-').casefold() for name in locale.windows_locale.values()}
+    known|={name.split('-')[0] for name in known};known|={'zh-hans','zh-hant'}
+    if culture.casefold() not in known:return None
+    import dnfile
+    pe=dnfile.dnPE(data=data,clr_lazy_load=True)
+    try:
+        if not pe.net or not pe.net.mdtables or not pe.net.mdtables.Assembly or len(pe.net.mdtables.Assembly.rows)!=1:raise ValueError('satellite assembly identity unavailable')
+        row=pe.net.mdtables.Assembly.rows[0];name=str(row.Name);actual=str(row.Culture)
+        if pe.get_warnings():raise ValueError('satellite assembly parser warnings: '+repr(pe.get_warnings()))
+        if (name+'.dll').casefold()!=filename.casefold() or actual.casefold()!=culture.casefold():raise ValueError('managed resource assembly name/culture contradicts original NTFS path')
+        return dict(kind='original-NTFS-directory-managed-assembly-culture',assembly_name=name,culture=actual,original_directory_culture=culture)
+    finally:pe.close()
 
 
 def image_digest(data, verify=True):
@@ -77,7 +99,7 @@ def candidates(data, fs, names, stride, base_allowed):
                         evidence=dict(record=number,sequence=r.header.SequenceNumber,filename=name,page_offset=off,size=extent)
                         # Reassemble the candidate file through all its extents,
                         # overlaying only bytes from this actual source frame.
-                        if cert.Size:
+                        if cert.Size or name.endswith('.resources.dll'):
                             stream=r.open(); filedata=bytearray(stream.read())
                             logical=0; outside=0
                             for lcn,count in runs:
@@ -86,7 +108,9 @@ def candidates(data, fs, names, stride, base_allowed):
                                     a=lcn*4096; lo=max(a,base); hi=min(a+nbytes,base+len(data))
                                     if hi>lo:filedata[logical+lo-a:logical+hi-a]=data[lo-base:hi-base]
                                 logical+=count*4096
-                            evidence['image_digest']=image_digest(bytes(filedata))
+                            if cert.Size:evidence['image_digest']=image_digest(bytes(filedata))
+                            binding=resource_culture_binding(bytes(filedata),r.full_path(),name)
+                            if binding:evidence['original_resource_culture_binding']=binding
                         matches.append((base,evidence))
                     except Exception as ex:
                         _audit_caught(ex, None, expected=True, site='pe_anchors.py:90')

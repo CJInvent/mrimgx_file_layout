@@ -4,6 +4,7 @@ dissect.hypervisor
 dissect.fat
 numpy
 pefile
+dnfile>=0.18,<0.19
 asn1crypto
 pypdf>=6.10,<7
 Pillow

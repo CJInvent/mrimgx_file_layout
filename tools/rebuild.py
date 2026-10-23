@@ -210,7 +210,7 @@ def main():
                         if rec.size()<26:continue
                         stream=rec.open();header=stream.read(26)
                         if header[:4]!=b'ChBc':continue
-                        out=a.output/f'{runner.serial+1:04d}-chakra';runner.call('recover_chakra_offsets',[a.source,baseline,mft,manifest,evidence,current,out,'--record',row['record']]);current=out
+                        out=a.output/f'{runner.serial+1:04d}-chakra';runner.call('recover_chakra_offsets',[a.source,baseline,mft,manifest,evidence,current,out,'--record',row['record'],'--minimum-pointers',3]);current=out
                     except Exception as e:
                         _audit_caught(e, locals(), expected=False, site='rebuild.py:173')
                         if 'header' in locals() and header[:4]==b'ChBc':errors.append(dict(tool='chakra',record=row['record'],error=str(e)))

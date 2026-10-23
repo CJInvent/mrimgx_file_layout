@@ -230,6 +230,21 @@ def main():
                     for base,evidence in match(data,groups):
                         propose(f,2,False,base//stride,p['_geometry']['start']+base,stride,'appx-blockmap-sha256-mft-runlist',dict(anchors=evidence))
                     if index%500==0:print('Appx frames processed',index,flush=True)
+    # Intersect all original file constraints before calling competing enclosing
+    # frames ambiguous. Repeated small files alone cannot choose a whole frame.
+    from anchor_consensus import resolve
+    consensus=[]
+    with (args.evidence/'orphan-decoded.bin').open('rb') as corpus:
+        def read_frame(frame):
+            corpus.seek(frame['export_offset']);data=corpus.read(frame['decoded_length'])
+            if len(data)!=frame['decoded_length'] or hashlib.sha256(data).hexdigest()!=frame['sha256']:raise ValueError('anchor consensus evidence digest mismatch')
+            return data
+        for key,items in list(proposals.items()):
+            pi,res,b,d,l=key
+            if pi!=2 or res or len({frames[item['frame']]['sha256'] for item in items})<2:continue
+            selected,report=resolve(items,frames,read_frame,ntfses[2],d-parts[2]['_geometry']['start'],l)
+            proposals[key]=selected;consensus.append(dict(target=key,**report))
+    (args.output/'anchor-consensus.json').write_text(json.dumps(consensus,indent=2))
     # A frame must have one inferred destination across all its metadata pages.
     frame_targets=collections.defaultdict(set)
     for key,items in proposals.items():

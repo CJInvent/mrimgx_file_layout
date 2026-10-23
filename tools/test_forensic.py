@@ -41,6 +41,66 @@ from rebuild import Runner
 
 
 class ForensicTests(unittest.TestCase):
+    def test_managed_resource_culture_requires_original_directory_agreement(self):
+        from pe_anchors import resource_culture_binding
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        assembly=SimpleNamespace(Name='Example.resources',Culture='zh-CN')
+        pe=SimpleNamespace(net=SimpleNamespace(mdtables=SimpleNamespace(Assembly=SimpleNamespace(rows=[assembly]))),get_warnings=lambda:[],close=lambda:None)
+        with patch('dnfile.dnPE',return_value=pe):
+            self.assertEqual(resource_culture_binding(b'fixture',r'Program Files\Example\zh-CN\Example.resources.dll','Example.resources.dll')['culture'],'zh-CN')
+            with self.assertRaises(ValueError):resource_culture_binding(b'fixture',r'Program Files\Example\de\Example.resources.dll','Example.resources.dll')
+            with self.assertRaises(ValueError):resource_culture_binding(b'fixture',r'Program Files\Example\zh-CN\Other.resources.dll','Other.resources.dll')
+            self.assertIsNone(resource_culture_binding(b'fixture',r'Program Files\Example\Example.resources.dll','Example.resources.dll'))
+            self.assertIsNone(resource_culture_binding(b'fixture',r'Program Files\Example\bin\Example.resources.dll','Example.resources.dll'))
+
+    def test_anchor_consensus_intersects_constraints_without_voting(self):
+        from anchor_consensus import unique_consensus
+        good=b'ORIGINAL-CACHE'+b'ORIGINAL-ICON'
+        cache_only=b'ORIGINAL-CACHE'+b'XXXXXXXXXXXXX'
+        icon_only=b'XXXXXXXXXXXXXX'+b'ORIGINAL-ICON'
+        constraints=[dict(kind='sha256',record=1,offset=0,length=14,digest=hashlib.sha256(good[:14]).hexdigest()),dict(kind='sha256',record=2,offset=14,length=13,digest=hashlib.sha256(good[14:]).hexdigest())]
+        candidates={hashlib.sha256(data).hexdigest():data for data in (cache_only,icon_only,good)}
+        self.assertEqual(unique_consensus(candidates,constraints),hashlib.sha256(good).hexdigest())
+        self.assertIsNone(unique_consensus({key:value for key,value in candidates.items() if value!=good},constraints))
+
+    def test_anchor_consensus_keeps_unbound_neighbors_ambiguous(self):
+        from anchor_consensus import unique_consensus
+        constraints=[dict(kind='sha256',record=i,offset=i,length=1,digest=hashlib.sha256(bytes([65+i])).hexdigest()) for i in (0,1)]
+        self.assertIsNone(unique_consensus({'a':b'AB-first-neighbors','b':b'AB-other-neighbors'},constraints))
+        for row in constraints:row['record']=1
+        self.assertIsNone(unique_consensus({'a':b'AB-first-neighbors'},constraints))
+
+    def test_anchor_consensus_checks_original_chromium_key(self):
+        import struct
+        from anchor_consensus import satisfies
+        key=b'https://example.invalid/original-cache-key'
+        data=bytes.fromhex('305c72a71b6dfbfc')+struct.pack('<IIQ',5,len(key),0)+key
+        constraint=dict(kind='chromium-key',record=7,offset=0,length=len(data),stem=f'{int.from_bytes(hashlib.sha1(key).digest()[:8],"little"):016x}')
+        self.assertTrue(satisfies(data,constraint))
+        self.assertFalse(satisfies(data[:-1]+b'X',constraint))
+        self.assertFalse(satisfies(data[:12]+struct.pack('<I',8192)+data[16:],constraint))
+
+    def test_anchor_consensus_rejects_changed_record_sequence(self):
+        from anchor_consensus import resolve
+        from types import SimpleNamespace
+        record=SimpleNamespace(header=SimpleNamespace(Flags=1,SequenceNumber=4),is_dir=lambda:False)
+        fs=SimpleNamespace(mft=SimpleNamespace(get=lambda number:record))
+        items=[dict(frame=1,method='chromium-key-mft-runlist',detail=dict(anchors=[dict(record=7,sequence=3,filename='0123456789abcdef_0')]))]
+        selected,report=resolve(items,{},lambda row:b'',fs,0,4096)
+        self.assertEqual(selected,items);self.assertFalse(report['resolved']);self.assertTrue(report['unavailable_constraints'])
+
+    def test_chakra_short_arrays_keep_independent_address_evidence(self):
+        import struct
+        data=bytearray(512)
+        for start,count in ((64,3),(200,4)):
+            end=start+count*4
+            struct.pack_into('<'+'I'*count,data,start,*[1000+end+40*i for i in reversed(range(count))])
+            data[end:end+4]=bytes.fromhex('b11c08c0')
+        self.assertEqual(list(pointer_arrays(data,500,5000,8)),[])
+        hits=[row for row in pointer_arrays(data,500,5000,3) if row['origin']==1000]
+        self.assertEqual({row['pointer_end'] for row in hits},{76,216})
+
     def test_resolved_component_file_metadata_requires_matching_proven_record(self):
         from rebuild import mark_manifest_restorations
         content=b'original file contents';sha=hashlib.sha256(content).hexdigest()
