@@ -10,14 +10,12 @@ from rebuild_context import Context
 from recover_duplicate_files import file_extents,frame_pieces
 from recover_file_hashes import reconstruct
 from recover_file_hashes import distinctive_hash_bound
+from zip_directory import directory_bounds
 
 
 def validate_archive(data,maximum=64*1024**2):
     if data[:4]!=b'PK\x03\x04':raise ValueError('archive must begin at its original file boundary')
-    end=data.rfind(b'PK\x05\x06',max(0,len(data)-65557))
-    if end<0 or end+22>len(data):raise ValueError('ZIP end record missing')
-    signature,disk,cd_disk,disk_count,count,cd_size,cd_offset,comment=struct.unpack_from('<4s4H2IH',data,end)
-    if disk or cd_disk or count!=disk_count or count==65535 or end+22+comment!=len(data) or cd_offset+cd_size!=end:raise ValueError('archive boundary, disk or ZIP64 layout unsupported')
+    bounds=directory_bounds(io.BytesIO(data),len(data));count=bounds['entries'];cd_offset=bounds['directory_offset']
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         infos=archive.infolist()
         if not infos or len(infos)!=count or min(i.header_offset for i in infos)!=0 or archive.start_dir!=cd_offset or len(infos)>10000 or sum(i.file_size for i in infos)>maximum:raise ValueError('archive expansion/boundary bounds')
@@ -47,10 +45,8 @@ def original_crossing_crcs(template,mask,members,pieces):
     # is missing. Its original names, offsets, lengths and CRCs are independent
     # constraints, unlike a directory supplied by the candidate itself.
     try:
-        end=template.rfind(b'PK\x05\x06',max(0,len(template)-65557))
-        if end<0 or end+22>len(template) or not all(mask[end:]):return result
-        signature,disk,cd_disk,disk_count,count,cd_size,cd_offset,comment=struct.unpack_from('<4s4H2IH',template,end)
-        if disk or cd_disk or count!=disk_count or end+22+comment!=len(template) or cd_offset+cd_size!=end or not all(mask[cd_offset:end]):return result
+        bounds=directory_bounds(io.BytesIO(template),len(template));end=bounds['end_record_offset'];count=bounds['entries'];cd_offset=bounds['directory_offset']
+        if not all(mask[cd_offset:]):return result
         with zipfile.ZipFile(io.BytesIO(template)) as archive:original={i.filename:i for i in archive.infolist()}
         if len(original)!=count or len(members)!=count:return result
         for item in members:

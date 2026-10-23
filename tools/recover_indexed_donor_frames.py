@@ -17,11 +17,8 @@ ARCHIVES={'.zip','.docx','.xlsx','.pptx','.docm','.xlsm','.pptm','.jar','.vsix',
 
 
 def archive_members(ctx,record):
-    size=record.size();holes=ctx.holes(record);stream=record.open();start=max(0,size-65557);stream.seek(start);tail=stream.read(size-start);end=tail.rfind(b'PK\x05\x06')
-    if end<0 or end+22>len(tail):raise ValueError('archive end record unavailable')
-    sig,disk,cd_disk,nd,n,cd_size,cd_off,comment=struct.unpack_from('<4s4H2IH',tail,end);eof=start+end
-    if disk or cd_disk or nd!=n or n==65535 or cd_size>128*1024**2 or eof+22+comment!=size or cd_off+cd_size!=eof:raise ValueError('unsupported/invalid archive directory bounds')
-    if any(lo<size and hi>cd_off for lo,hi,base in holes):raise ValueError('original archive directory intersects missing bytes')
+    from zip_directory import directory_bounds
+    size=record.size();holes=ctx.holes(record);stream=record.open();bounds=directory_bounds(stream,size,holes);n=bounds['entries'];cd_off=bounds['directory_offset']
     result=[]
     with zipfile.ZipFile(stream) as archive:
         if len(archive.infolist())!=n:raise ValueError('original archive directory member count differs')

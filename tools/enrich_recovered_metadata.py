@@ -12,7 +12,8 @@ from dissect.util.stream import RangeStream
 
 
 def enrich(recovered,baseline,mft,inventory,layout):
-    files=[];sizes=set();paths={x['record']:x.get('path') for x in map(json.loads,inventory.open())}
+    files=[];sizes=set()
+    with inventory.open() as stream:paths={x['record']:x.get('path') for x in map(json.loads,stream)}
     for side in (recovered/'files').glob('*.json'):
         info=json.loads(side.read_text());content=side.with_suffix('').read_bytes()
         if hashlib.sha256(content).hexdigest()!=info['sha256']:raise ValueError('carved file changed')

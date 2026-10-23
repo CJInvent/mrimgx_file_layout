@@ -246,6 +246,10 @@ verifier code. Every declared added range still gets fresh source readback.
 
 The ZIP stage also exports members of affected archives under
 `recovered_files/archive-members`, using generated filenames and JSON sidecars.
+Single-disk ZIP64 directories are parsed with known original locator/end-record
+bounds and agreement of legacy and 64-bit metadata. The same checks serve
+indexed-donor nomination and ZIP reconstruction; original CRC evidence remains
+required for filesystem placement.
 Stored and raw-deflate members are decoded independently; a bad member does
 not stop later members. Unknown compressed bytes stop decoding immediately.
 CRC-valid members, CRC-failing output and incomplete decoded prefixes carry
@@ -255,6 +259,14 @@ of these extracted files is inserted into the VHDX. Defaults bound output to
 16 GiB per member and 256 GiB overall; bound hits and unsupported/encrypted
 members are logged. Exact source frame hashes do not guarantee that the
 original archive itself was valid; pre-existing CRC errors remain explicit.
+
+When an original directory is unreadable, a bounded local-header scan can
+nominate additional members. Complete CRC/size/deflate checks and known source
+bytes remain mandatory for a valid decoded record. Sidecars explicitly retain
+unproven original active-directory membership; these candidates never authorize
+VHDX insertion. Unknown compressed bytes preserve only a decoded prefix, while
+encrypted members and descriptor-based local records are reported as skipped.
+The default local-header scan bound is 256 MiB per archive and bound hits are logged.
 
 The external residual export also probes cluster-aligned LZNT1 sequences with
 the bounded Windows decoder. Sixteen individually checked complete chunks can
