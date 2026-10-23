@@ -368,6 +368,7 @@ def main():
     rescue_args=[evidence,current/'accepted-mappings.json',a.output/'recovered_files']
     if catalog_members_for_rescue:rescue_args+=['--catalog-members',catalog_members_for_rescue]
     runner.call('rescue_unplaced_files',rescue_args)
+    runner.call('nominate_log_locations',[mft,inventory,a.output/'recovered_files',a.output/'recovered_files/log-location-hints.json'])
     if 'zip-files' in requested and not a.search_only:runner.call('rescue_archive_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.output/'recovered_files/archive-members'])
     if 'metadata-rescue' in requested:runner.call('rescue_unreadable_records',[a.source,baseline,mft,manifest,evidence,current,a.output/'recovered_files/metadata-records'])
     shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')

@@ -263,6 +263,11 @@ encoded hash and uncertainty metadata. Embedded files are passed through the
 same internally checked file carvers. Compression syntax alone never proves
 an original file, compression-unit start, logical offset or filesystem address;
 these fragments remain outside the VHDX under `compressed-fragments`.
+Recovered gzip logs also receive possible original path nominations when their
+complete encoded size and embedded start timestamp agree with original MFT
+filenames. Sidecars retain record/sequence, original affected ranges and the
+MFT-record fingerprint. Missing process identity and historical file digests
+remain explicit; these nominations never authorize a VHDX placement.
 
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
