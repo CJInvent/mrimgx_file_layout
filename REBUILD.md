@@ -256,6 +256,14 @@ of these extracted files is inserted into the VHDX. Defaults bound output to
 members are logged. Exact source frame hashes do not guarantee that the
 original archive itself was valid; pre-existing CRC errors remain explicit.
 
+The external residual export also probes cluster-aligned LZNT1 sequences with
+the bounded Windows decoder. Sixteen individually checked complete chunks can
+be preserved as a decoded 64 KiB fragment with source packet, compressed offset,
+encoded hash and uncertainty metadata. Embedded files are passed through the
+same internally checked file carvers. Compression syntax alone never proves
+an original file, compression-unit start, logical offset or filesystem address;
+these fragments remain outside the VHDX under `compressed-fragments`.
+
 Exit 0 means a complete baseline manifest contained no recovery substitutions.
 Exit 2 means a forensic partial rebuild/search completed with explicit remaining
 uncertainty; inspect stage failures and search bounds. Fatal errors return a

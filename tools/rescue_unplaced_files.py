@@ -9,6 +9,7 @@ from contextlib import closing
 from recover_png_crc_grid import validate_png
 from pe_anchors import image_digest
 from recover_catalog_files import catalog_digest
+from ntfs_compressed_fragments import compressed_units
 
 
 def pe_catalog_hashes(path):
@@ -112,7 +113,7 @@ def carved_files(data,maximum=256*1024**2,catalog_hashes=None):
 
 
 def export(evidence,mappings,output,catalog_members=None):
-    output.mkdir(exist_ok=False);fragments=output/'fragments';fragments.mkdir();files=output/'files';files.mkdir();accepted=json.loads(mappings.read_text());placed={fid for m in accepted for fid in m['frames']};mapped_hashes=collections.defaultdict(list)
+    output.mkdir(exist_ok=False);fragments=output/'fragments';fragments.mkdir();files=output/'files';files.mkdir();compressed=output/'compressed-fragments';compressed.mkdir();seen_units={};accepted=json.loads(mappings.read_text());placed={fid for m in accepted for fid in m['frames']};mapped_hashes=collections.defaultdict(list)
     for m in accepted:mapped_hashes[m['sha256']].append(m['disk_offset'])
     db=sqlite3.connect((evidence/'catalog.sqlite').resolve().as_uri()+'?mode=ro',uri=True);counts=collections.Counter();seen_files={};catalog_hashes=pe_catalog_hashes(catalog_members)
     with closing(db),(evidence/'orphan-decoded.bin').open('rb') as corpus,(output/'index.jsonl').open('x') as log:
@@ -124,8 +125,16 @@ def export(evidence,mappings,output,catalog_members=None):
             records=[dict(decoded_offset=off,signature=sig,length=n,fixup_valid=bool(valid),record_number=number,details=json.loads(details) if details else None) for off,sig,n,valid,number,details in db.execute('SELECT decoded_offset,signature,length,fixup_valid,record_number,details FROM records WHERE frame=?',(fid,))]
             metadata=dict(schema_version=1,kind='unplaced-frame',placement_status='unresolved',vhdx_insertion_authorized=False,frame=fid,sha256=sha,bytes=length,source_offset=source_offset,encoded_bytes=stored,original_evidence_offset=offset,original_evidence=str(evidence.resolve()),possible_locations=[],content_also_at=mapped_hashes.get(sha,[]),recoverable_ntfs_records=records,note='Content equality does not prove this frame originally belonged at an equivalent location. No export adjacency implies disk order.')
             exclusive_write(path.with_suffix(path.suffix+'.json'),json.dumps(metadata,indent=2));log.write(json.dumps(dict(path=str(path.relative_to(output)),metadata=str(path.with_suffix(path.suffix+'.json').relative_to(output)),**metadata))+'\n');counts['unplaced_frames']+=1;counts['unplaced_bytes']+=length
-            for start,content,suffix,validation in carved_files(data,catalog_hashes=catalog_hashes):
-                digest=hashlib.sha256(content).hexdigest();key=(digest,suffix);provenance=dict(frame=fid,frame_offset=start,source_offset=source_offset,source_encoding='zstd-decoded-frame')
+            candidates=[(start,content,suffix,validation,dict(frame=fid,frame_offset=start,source_offset=source_offset,source_encoding='zstd-decoded-frame')) for start,content,suffix,validation in carved_files(data,catalog_hashes=catalog_hashes)]
+            for start,consumed,decoded in compressed_units(data):
+                digest=hashlib.sha256(decoded).hexdigest();witness=dict(frame=fid,frame_offset=start,source_offset=source_offset,source_encoding='ntfs-lznt1-within-zstd-frame',encoded_bytes=consumed,encoded_sha256=hashlib.sha256(data[start:start+consumed]).hexdigest())
+                if digest in seen_units:
+                    side=seen_units[digest];meta=json.loads(side.read_text());meta['provenance'].append(witness);side.write_text(json.dumps(meta,indent=2))
+                else:
+                    target=compressed/(digest+'.bin');exclusive_write(target,decoded);side=target.with_suffix('.bin.json');seen_units[digest]=side;exclusive_write(side,json.dumps(dict(schema_version=1,kind='uncertain-ntfs-compressed-unit-fragment',sha256=digest,bytes=len(decoded),placement_status='unresolved',vhdx_insertion_authorized=False,possible_locations=[],provenance=[witness],validation=dict(lznt1_chunk_sequences_valid=True,complete_chunks=16,chunk_decoded_bytes=4096,structural_validation_only=True,original_file_digest_available=False,original_unit_start_proven=False),note='A complete bounded compression-unit-shaped sequence is readable. Original file identity, logical offset and filesystem address are unproven; false positives remain possible.'),indent=2));counts['compressed_unit_fragments']+=1;counts['compressed_unit_decoded_bytes']+=len(decoded)
+                for inner,content,suffix,validation in carved_files(decoded,catalog_hashes=catalog_hashes):candidates.append((inner,content,suffix,validation,dict(witness,decoded_unit_offset=inner)))
+            for start,content,suffix,validation,provenance in candidates:
+                digest=hashlib.sha256(content).hexdigest();key=(digest,suffix)
                 if key in seen_files:
                     side=seen_files[key];old=json.loads(side.read_text());old['provenance'].append(provenance);side.write_text(json.dumps(old,indent=2));continue
                 target=files/(digest+'.'+suffix);exclusive_write(target,content);side=target.with_suffix(target.suffix+'.json');seen_files[key]=side
