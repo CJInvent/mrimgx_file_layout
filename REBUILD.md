@@ -224,6 +224,20 @@ source packets. Cached reconstructed bodies never authorize placement. Proven
 frames are materialized in the working clone before later searches and count
 toward convergence, so they can unlock additional hash and metadata recovery.
 
+`orphan-bit-repair` additionally checks undecodable orphan packets against the
+entire surviving unplaced original hash set. It does not require the damaged
+index's source pointer to identify the packet. A raw residual scan also finds
+Zstandard magic damaged by one bit, excluding all already decoded packet spans.
+Supported packet boundaries are parsed from block headers; the native helper
+tests every encoded bit and requires a complete original target MD5 match.
+Boundary failures, absent hashes and complete negative searches are retained
+in per-candidate JSON and audit events. A positive result is independently
+checked as an original-index reconstruction, including its exact one-bit
+source derivative; the source packet itself remains unchanged. This covers
+single-bit damage within supported boundaries, not arbitrary multi-bit damage.
+The helper also accepts `@digest_list.txt` instead of one MD5 for reusable
+batch testing. The decoded size remains a required explicit bound.
+
 `native-baseline-validation` reads every incorporated native block back from
 the baseline and checks its recorded digest. An optional
 `--reuse-baseline-validation SUMMARY_JSON` accepts a previous successful proof

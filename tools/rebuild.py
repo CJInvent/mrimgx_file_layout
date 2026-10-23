@@ -11,7 +11,7 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,indexed-donors,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
+DEFAULT_STAGES='residual-audit,bit-repair,indexed-donors,orphan-bit-repair,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
 ACTIVE_RUNNER=None
 
 
@@ -239,6 +239,11 @@ def main():
                 out=a.output/f'{runner.serial+1:04d}-recover_indexed_donor_frames';args=[a.source,baseline,mft,inventory,manifest,evidence,current,out,'--per-file-budget',a.per_file_budget]
                 if known_index_path:args+=['--known-reconstructions',known_index_path]
                 runner.call('recover_indexed_donor_frames',args);current=out;apply_index_reconstructions(out/'supplemental-placements.json',f'indexed-donors-{round_number:03d}')
+            elif name=='orphan-bit-repair':
+                out=a.output/f'{runner.serial+1:04d}-recover_orphan_bit_frames';helper=a.bit_repair_exe or ((a.native.parent if a.native else TOOLS.parent/'build')/'repair_frame_bits.exe');args=[a.source,evidence,current,helper,out]
+                if audit_output and (audit_output/'summary.json').exists():args+=['--residual-audit',audit_output]
+                if known_index_path:args+=['--known-reconstructions',known_index_path]
+                runner.call('recover_orphan_bit_frames',args);current=out;apply_index_reconstructions(out/'supplemental-placements.json',f'orphan-bit-repairs-{round_number:03d}')
             elif name=='ntfs-metadata':stage('recover_ntfs_metadata_links',[a.source,baseline,mft,manifest,evidence,current])
             elif name in ('appx','signed-pe','structured','zip-files','pdf','wal','ese','png','chromium-streams'):
                 if name=='appx':
@@ -340,6 +345,7 @@ def main():
     paths=list(a.output.glob('*-recover_catalog_files/supplemental-placements.json'))+list(a.output.glob('*-bind_inf_catalog_candidates/supplemental-placements.json'))+list(a.output.glob('*-recover_file_hashes/supplemental-placements.json'))
     paths += [pathlib.Path(p) for p in resume.get('supplemental_paths',[])]
     paths += list(a.output.glob('*-recover_indexed_donor_frames/supplemental-placements.json'))
+    paths += list(a.output.glob('*-recover_orphan_bit_frames/supplemental-placements.json'))
     if bit_output and (bit_output/'supplemental-placements.json').exists():paths.append(bit_output/'supplemental-placements.json')
     for path in paths:
         for m in json.loads(path.read_text()):

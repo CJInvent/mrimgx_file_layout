@@ -20,18 +20,18 @@
 
 int wmain(int argc,wchar_t** argv) {
   try {
-    if(argc!=5) throw std::runtime_error("Usage: repair_frame_bits encoded.bin repaired.bin original_decoded_md5 decoded_length");
+    if(argc!=5) throw std::runtime_error("Usage: repair_frame_bits encoded.bin repaired.bin original_decoded_md5|@digest_list.txt decoded_length");
     std::filesystem::path input(argv[1]),output(argv[2]);
     if(std::filesystem::exists(output))throw std::runtime_error("Output exists");
     auto size=std::filesystem::file_size(input);
     auto decodedSize=std::stoull(argv[4]);
     if(!size||size>5*1024*1024||!decodedSize||decodedSize>4*1024*1024)throw std::runtime_error("Frame bounds");
     std::wstring expectedText(argv[3]);std::string expectedAscii;std::array<unsigned char,16> expected{},digest{};
-    if(expectedText.size()!=32)throw std::runtime_error("Expected MD5 length");
-    for(size_t i=0;i<16;++i) {
-      auto text=expectedText.substr(i*2,2);size_t end=0;auto value=std::stoul(text,&end,16);
-      if(end!=2)throw std::runtime_error("Expected MD5 syntax");expected[i]=(unsigned char)value;
-    }
+    auto parse=[](const std::wstring& text){std::array<unsigned char,16> value{};if(text.size()!=32)throw std::runtime_error("Expected MD5 length");for(size_t i=0;i<16;++i){size_t end=0;auto n=std::stoul(text.substr(i*2,2),&end,16);if(end!=2||n>255)throw std::runtime_error("Expected MD5 syntax");value[i]=(unsigned char)n;}return value;};
+    bool batch=!expectedText.empty()&&expectedText[0]==L'@';std::vector<std::array<unsigned char,16>> targets;
+    if(batch){std::filesystem::path listPath(expectedText.substr(1));if(std::filesystem::file_size(listPath)>16*1024*1024)throw std::runtime_error("Digest list bounds");std::ifstream list{listPath};std::string line;while(std::getline(list,line)){if(!line.empty()&&line.back()=='\r')line.pop_back();targets.push_back(parse(std::wstring(line.begin(),line.end())));}if(targets.empty())throw std::runtime_error("Empty digest list");std::sort(targets.begin(),targets.end());targets.erase(std::unique(targets.begin(),targets.end()),targets.end());expectedText=std::wstring(32,L'0');}
+    else targets.push_back(parse(expectedText));
+    expected=targets.front();auto matchesDigest=[&](const std::array<unsigned char,16>& value){return std::binary_search(targets.begin(),targets.end(),value);};
     for(wchar_t c:expectedText)expectedAscii.push_back(static_cast<char>(c));
     std::ifstream stream(input,std::ios::binary);std::vector<unsigned char> encoded((size_t)size),decoded((size_t)decodedSize);
     if(!stream.read(reinterpret_cast<char*>(encoded.data()),encoded.size()))throw std::runtime_error("Input read");
@@ -39,7 +39,7 @@ int wmain(int argc,wchar_t** argv) {
     auto valid=[&]() {
       auto n=ZSTD_decompressDCtx(context,decoded.data(),decoded.size(),encoded.data(),encoded.size());
       if(ZSTD_isError(n)||n!=decoded.size())return false;
-      MD5(decoded.data(),decoded.size(),digest.data());return digest==expected;
+      MD5(decoded.data(),decoded.size(),digest.data());return matchesDigest(digest);
     };
     if(valid()) {ZSTD_freeDCtx(context);std::cout<<"{\"status\":\"input-already-matches\"}\n";return 0;}
     // Uncompressed Zstd blocks map encoded payload bits directly to decoded
@@ -85,14 +85,14 @@ int wmain(int argc,wchar_t** argv) {
           bool candidate=false;
           if(raw&&rawMap[offset]!=absent) {
             size_t at=rawMap[offset],start=at/64*64;rawData[at]^=1u<<bit;auto p=prefixes[at/64];
-            MD5_Update(&p,rawData.data()+start,rawData.size()-start);MD5_Final(hash.data(),&p);rawData[at]^=1u<<bit;candidate=hash==expected;
+            MD5_Update(&p,rawData.data()+start,rawData.size()-start);MD5_Final(hash.data(),&p);rawData[at]^=1u<<bit;candidate=matchesDigest(hash);
           } else {
             auto n=ZSTD_decompressDCtx(ctx,out.data(),out.size(),local.data(),local.size());
-            if(!ZSTD_isError(n)&&n==out.size()){MD5(out.data(),out.size(),hash.data());candidate=hash==expected;}
+            if(!ZSTD_isError(n)&&n==out.size()){MD5(out.data(),out.size(),hash.data());candidate=matchesDigest(hash);}
           }
           if(candidate) {
             auto n=ZSTD_decompressDCtx(ctx,out.data(),out.size(),local.data(),local.size());
-            if(!ZSTD_isError(n)&&n==out.size()){MD5(out.data(),out.size(),hash.data());if(hash==expected){std::lock_guard<std::mutex> lock(reportMutex);++matches;foundOffset=offset;foundBit=bit;}}
+            if(!ZSTD_isError(n)&&n==out.size()){MD5(out.data(),out.size(),hash.data());if(matchesDigest(hash)){std::lock_guard<std::mutex> lock(reportMutex);++matches;foundOffset=offset;foundBit=bit;}}
           }
           local[offset]^=1u<<bit;
         }
