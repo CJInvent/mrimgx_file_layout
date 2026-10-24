@@ -5,6 +5,12 @@ from rescue_sevenzip_members import export_members,member_parts
 
 
 class SevenZipCopyTests(unittest.TestCase):
+    def test_boundary_candidate_cache_preserves_gaps_and_rejects_overlap(self):
+        from indexed_boundary_donors import candidate_bytes
+        self.assertEqual(candidate_bytes([(7,b'XY'),(2,b'abc')],12),b'\0\0abc\0\0XY\0\0\0')
+        for chunks in ([(2,b'abc'),(4,b'zz')],[(11,b'xx')],[(-1,b'x')]):
+            with self.assertRaises(ValueError):candidate_bytes(chunks,12)
+
     def test_joint_file_tail_parts_keep_offsets_and_explicit_source_padding(self):
         from indexed_boundary_donors import padded_parts
         zero=dict(source_offset=100,decoded_offset=0,decoded_length=100,length=100,target_offset=0)

@@ -9,7 +9,7 @@ native integration tests, with no skips**, on Windows; its
 [Windows CI run](https://github.com/CJInvent/mrimgx_file_layout/actions/runs/40039011818)
 also passed.
 
-The subsequent container/donor iteration passes **130 forensic tests and 10
+The subsequent container/donor iteration passes **131 forensic tests and 10
 native integration tests, with no skips** locally. Its new stored-member donor
 search independently reconstructed three additional complete frames / 430,080
 bytes matching the original source-index MD5 values. Fresh source-piece decoding
