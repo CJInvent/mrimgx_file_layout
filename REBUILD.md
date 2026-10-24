@@ -282,6 +282,34 @@ its stricter original file-boundary and independent crossing-CRC proofs. Executa
 stubs and recovered programs are never launched. Detection and per-member metadata
 record whether the archive was nominated by suffix or known source content.
 
+The default `container-members` stage also rescues members from damaged CAB and
+compound (CFB/OLE) containers by content, including cabinets with unrelated suffixes
+and Windows Installer/Office compound files. These exports remain outside the VHDX.
+
+CAB rescue requires known original member metadata and stops its compressed input
+at the first unavailable block. Original block checksums are checked when present.
+A separate, retained decoder cabinet uses generated names and known source blocks;
+its metadata can truncate a member to its known prefix. A bad original checksum is
+recorded, and downstream output remains uncertain even if it decodes. Checksum
+fields may be neutralized only in this separate decoder input to preserve uncertain
+output; original source, cabinet and VHDX bytes remain unchanged. Decoder exit codes,
+original lengths/offsets, source block hashes and all metadata changes are logged.
+There is no assertion of original whole-member digest or cabinet certificate trust.
+Split cabinets and per-data-block reserve areas remain explicitly unsupported.
+The [7-Zip cabinet reader](https://github.com/ip7z/7zip/tree/main/CPP/7zip/Archive/Cab)
+and an independent Windows cabinet decoder were used for format validation.
+
+Compound rescue first proves that the header, DIFAT, FAT, directory and miniFAT
+metadata it uses are entirely known. Sector chains have cycle, length and bounds
+checks. Complete streams and every contiguous known part, including parts after a
+gap, have generated filenames and JSON with original stream paths, directory-entry
+hashes, logical offsets and exact source ranges. Missing bytes are never filled or
+joined. Bounded, overlapping carving windows inspect those known parts for nested
+files, using the same internal checks as residual carving; their container provenance
+is retained. `olefile` provides independent directory parsing; it is installed by
+`tools/requirements-forensic.txt`. A readable stream is not proof that the original
+installer, Office document or standalone filesystem object is complete.
+
 The external residual export also probes cluster-aligned LZNT1 sequences with
 the bounded Windows decoder. Sixteen individually checked complete chunks can
 be preserved as a decoded 64 KiB fragment with source packet, compressed offset,
@@ -301,6 +329,21 @@ uncertainty; inspect stage failures and search bounds. Fatal errors return a
 nonzero failure and never create a successful completion report.
 
 ## Audit logs
+
+The default `container-members` stage also reads original 7z metadata through
+source-known ranges and exports COPY members or their separate contiguous known
+parts. Full exports check the original member CRC; compressed methods remain
+unsupported and explicitly recorded. Original member names are JSON metadata;
+only generated numeric names become output paths. Stored ZIP and 7z members
+also nominate installed-file donors in both directions. Placement still requires
+the complete original target frame MD5 and re-decoding every source piece.
+
+Allocation-proven compound streams are also checked for nested CAB containers.
+The same source-known CAB block decoder and uncertainty rules apply there, with
+compound entry, allocation metadata and physical source ranges retained in JSON.
+Generated flat member names permit one bounded batch decode per CAB prefix;
+decoder failures are logged and retried individually. No decoder receives an
+original archive member path as an output path.
 
 Inventory refresh reads newly available NTFS attribute lists through the current
 source-backed overlay, while retaining the original corruption ranges for

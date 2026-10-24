@@ -37,7 +37,14 @@ def exclusive_write(path,data):
 
 def carved_files(data,maximum=256*1024**2,catalog_hashes=None):
     for match in re.finditer(rb'\x89PNG\r\n\x1a\n|\xff\xd8\xff|\x1f\x8b\x08|PK\x03\x04|MZ|RIFF|%PDF-',data):
-        start=match.start();chunk=data[start:];kind=match.group();validation=None;length=None;suffix=None
+        start=match.start();kind=match.group();validation=None;length=None;suffix=None
+        # Reject random MZ hits before allocating a potentially large slice.
+        # pefile also performs a full GC on each parsing exception.
+        if kind==b'MZ':
+            if len(data)-start<64:continue
+            pe_offset=struct.unpack_from('<I',data,start+60)[0]
+            if pe_offset+24>min(len(data)-start,maximum) or data[start+pe_offset:start+pe_offset+4]!=b'PE\0\0':continue
+        chunk=data[start:start+maximum]
         try:
             if kind.startswith(b'\x89PNG'):
                 pos=8

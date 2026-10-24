@@ -14,11 +14,17 @@ from placement_payload import assemble_source_parts
 from rebuild_audit import caught,emit
 
 from zip_directory import ARCHIVES,archive_nomination
+ARCHIVES=ARCHIVES|{'.7z'}
 
 
 def archive_members(ctx,record):
     from zip_directory import directory_bounds
-    size=record.size();holes=ctx.holes(record);stream=record.open();bounds=directory_bounds(stream,size,holes,allow_prefix=True);n=bounds['entries'];cd_off=bounds['directory_offset']
+    size=record.size();holes=ctx.holes(record);stream=record.open()
+    if stream.read(6)==bytes.fromhex('377abcaf271c'):
+        from sevenzip_copy import copy_members
+        members,proof=copy_members(stream,size,holes)
+        return [dict(member,record=record.segment) for member in members]
+    bounds=directory_bounds(stream,size,holes,allow_prefix=True);n=bounds['entries'];cd_off=bounds['directory_offset']
     result=[]
     with zipfile.ZipFile(stream) as archive:
         if len(archive.infolist())!=n or archive.start_dir!=cd_off:raise ValueError('original archive directory member count/bounds differ')
@@ -110,24 +116,37 @@ def main():
         for donor in sorted(donors-{number}):try_file(number,donor,0,'file-name-or-size-nomination-original-index-md5-required',items)
         if time.monotonic()-last>10:print(json.dumps(dict(phase='file-donors',targets=len(targets),reconstructed=len(solutions),candidate_attempts=sum(budgets.values()))),flush=True);last=time.monotonic()
     wanted_members=collections.defaultdict(list)
+    native_names=collections.defaultdict(set);native_sizes=collections.defaultdict(set)
+    for number in owners:
+        native_sizes[metadata[number][1]].add(number)
+        for name in metadata[number][0]:native_names[pathlib.PureWindowsPath(name).name.casefold()].add(number)
     for number,items in owners.items():
         if all(base in solutions for base,pieces in items):continue
         try:
-            if not any(archive_nomination(ctx,wanted_records[number],name) for name in metadata[number][0]):continue
+            if not any(pathlib.PureWindowsPath(name).suffix.casefold()=='.7z' or archive_nomination(ctx,wanted_records[number],name) for name in metadata[number][0]):continue
             for member in archive_members(ctx,wanted_records[number]):
+                name,crc,size,stored,method=member['key'];basename=pathlib.PureWindowsPath(name).name.casefold()
+                eligible=[(base,pieces) for base,pieces in items if base not in solutions and all(member['start']<=logical and logical+n<=member['stop'] for off,logical,n in pieces)]
+                if method==0 and size==stored and eligible:
+                    for donor in sorted((by_name.get(basename,set())|by_size.get(size,set()))-{number}):
+                        try_file(number,donor,-member['start'],'stored-member-to-native-file-original-index-md5-required',eligible)
                 for base,pieces in items:
                     if base not in solutions and all(member['start']<=logical and logical+n<=member['stop'] for off,logical,n in pieces):wanted_members[member['key']].append((number,base,pieces,member['start']))
         except Exception as error:caught(error,dict(record=number),expected=True,site='indexed-target-archive-probe')
-    if wanted_members:
+    if wanted_members or native_names:
         for donor in sorted(archive_records):
             try:
                 record=ctx.fs.mft.get(donor)
                 for member in archive_members(ctx,record):
+                    name,crc,size,stored,method=member['key'];basename=pathlib.PureWindowsPath(name).name.casefold()
+                    if method==0 and size==stored:
+                        for number in sorted(native_names.get(basename,set())|native_sizes.get(size,set())):
+                            if number!=donor:try_file(number,donor,member['start'],'native-file-from-stored-member-original-index-md5-required',owners[number])
                     for number,base,pieces,start in wanted_members.get(member['key'],[]):
                         if donor==number or base in solutions:continue
                         try_file(number,donor,member['start']-start,'zip-member-metadata-nomination-original-index-md5-required',[(base,pieces)])
             except Exception as error:caught(error,dict(record=donor),expected=True,site='indexed-donor-archive-probe')
-            if all(base in solutions for items in wanted_members.values() for number,base,pieces,start in items):break
+            if all(base in solutions for items in owners.values() for base,pieces in items):break
     requests=list(solutions.values());(a.output/'supplemental-placements.json').write_text(json.dumps(requests,indent=2))
     for name in ('accepted-mappings.json','recovery-plan.json'):(a.output/name).write_bytes((a.mapping_directory/name).read_bytes())
     if counts['per_file_budget_reached']:emit('search-limit','Indexed donor reconstruction per-file budget reached',severity='warning',context=dict(counts))

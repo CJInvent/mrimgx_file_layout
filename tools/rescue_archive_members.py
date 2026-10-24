@@ -53,6 +53,7 @@ def main():
             for row in map(json.loads,inventory):
                 try:
                     record=ctx.fs.mft.get(row['record']);nomination=archive_nomination(ctx,record,row.get('path') or '')
+                    if record.open().read(6)==bytes.fromhex('377abcaf271c'):continue
                 except Exception as error:
                     caught(error,dict(record=row['record']),expected=True,site='archive-content-nomination');continue
                 if not nomination:continue

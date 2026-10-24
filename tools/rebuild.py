@@ -11,7 +11,7 @@ from forensic_residuals import root_layout
 from rebuild_audit import Audit,emit,record_exception
 
 TOOLS=pathlib.Path(__file__).resolve().parent
-DEFAULT_STAGES='residual-audit,bit-repair,indexed-donors,orphan-bit-repair,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue'
+DEFAULT_STAGES='residual-audit,bit-repair,indexed-donors,orphan-bit-repair,ntfs-metadata,appx,cab,signed-pe,structured,zip-files,pdf,duplicates,chakra,wal,ese,fat-directories,fat-duplicates,fat-signed-pe,fat-joint-pe,ntfs-joint-pe,png,chromium-streams,installer-hashes,manifest-hashes,catalog-hashes,metadata-rescue,container-members'
 ACTIVE_RUNNER=None
 
 
@@ -370,6 +370,9 @@ def main():
     runner.call('rescue_unplaced_files',rescue_args)
     runner.call('nominate_log_locations',[mft,inventory,a.output/'recovered_files',a.output/'recovered_files/log-location-hints.json'])
     if 'zip-files' in requested and not a.search_only:runner.call('rescue_archive_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.output/'recovered_files/archive-members'])
+    if 'container-members' in requested and not a.search_only:runner.call('rescue_cab_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.seven_zip,a.output/'recovered_files/cab-members'])
+    if 'container-members' in requested and not a.search_only:runner.call('rescue_sevenzip_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.output/'recovered_files/7z-members'])
+    if 'container-members' in requested and not a.search_only:runner.call('rescue_cfb_members',[a.source,revised,mft,inventory,manifest,evidence,current,a.seven_zip,a.output/'recovered_files/cfb-members',a.output/'recovered_files/files'])
     if 'metadata-rescue' in requested:runner.call('rescue_unreadable_records',[a.source,baseline,mft,manifest,evidence,current,a.output/'recovered_files/metadata-records'])
     shutil.copy2(supplemental,a.output/'recovered_files/verified-supplemental-placements.json')
     if audit_output and (audit_output/'partial-decoded.bin').exists():

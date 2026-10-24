@@ -2,12 +2,23 @@
 
 ## Opt-in forensic rebuild
 
-The rebuild is tested separately from native conversion. The frozen forensic
-iteration at `27d15bd16ec88bdfdae0d45fd1f22004a02f64f7` passes **100 forensic
-tests and 10 native integration tests, with no skips**, on Windows. Its
-[Windows CI run](https://github.com/CJInvent/mrimgx_file_layout/actions/runs/40029626768)
-also passed. Full-image acceptance of this iteration is still running; these
-test counts do not imply that acceptance has finished.
+The rebuild is tested separately from native conversion. V16 and V17 have both
+completed independent full-image acceptance. The frozen V17 iteration at
+`970615bb598326098e30fce8af78276983718d10` passed **104 forensic tests and 10
+native integration tests, with no skips**, on Windows; its
+[Windows CI run](https://github.com/CJInvent/mrimgx_file_layout/actions/runs/40039011818)
+also passed.
+
+The subsequent container/donor iteration passes **127 forensic tests and 10
+native integration tests, with no skips** locally. Its new stored-member donor
+search independently reconstructed three additional complete frames / 430,080
+bytes matching the original source-index MD5 values. Fresh source-piece decoding
+confirmed all three. Latest direct CAB exports independently matched Windows
+expand.exe: 210 complete members and three uncertain prefixes / 644,874,240
+bytes. Compound allocation/stream checks independently verified 23,971 complete
+streams, 16 known parts and 164 additional carved files in the earlier focused
+test. Testing of nested CAB exports and the complete newest rebuild is still
+in progress; these focused results do not assert full-run acceptance.
 
 Earlier full-image validation independently accepted 6,444 full-frame mappings
 and 31 supplemental destinations. Fresh source decompression and VHDX readback

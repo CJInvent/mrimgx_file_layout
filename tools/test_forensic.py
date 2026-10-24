@@ -41,6 +41,8 @@ from rebuild import Runner
 from test_ntfs_metadata_links import NtfsMetadataLinkTests
 from test_indexed_reconstruction import IndexedReconstructionTests
 from test_archive_member_rescue import ArchiveMemberRescueTests
+from test_cab_member_rescue import CabMemberRescueTests
+from test_cfb_member_rescue import CfbMemberRescueTests
 from test_orphan_bit_frames import OrphanBitFrameTests
 from test_ntfs_compressed_fragments import NtfsCompressedFragmentTests,MetadataEnrichmentTests
 
@@ -743,5 +745,7 @@ class BitRepairTests(unittest.TestCase):
             self.assertEqual(result.returncode,2,result.stdout+result.stderr)
             self.assertFalse((root/'no-output.bin').exists())
 
+
+from test_sevenzip_copy import SevenZipCopyTests
 
 if __name__=='__main__':unittest.main()
