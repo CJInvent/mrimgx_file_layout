@@ -5,6 +5,24 @@ from rescue_sevenzip_members import export_members,member_parts
 
 
 class SevenZipCopyTests(unittest.TestCase):
+    def test_joint_file_tail_parts_keep_offsets_and_explicit_source_padding(self):
+        from indexed_boundary_donors import padded_parts
+        zero=dict(source_offset=100,decoded_offset=0,decoded_length=100,length=100,target_offset=0)
+        parts=[dict(zero,source_offset=200,target_offset=20,decoded_offset=5,length=10),dict(zero,source_offset=300,target_offset=60,decoded_offset=7,length=15)]
+        result=padded_parts(parts,zero,100);self.assertEqual([(p['target_offset'],p['length']) for p in result],[(0,20),(20,10),(30,30),(60,15),(75,25)])
+        self.assertEqual(result[1]['decoded_offset'],5)
+        with self.assertRaises(ValueError):padded_parts(parts+[dict(zero,target_offset=25,length=20)],zero,100)
+
+    def test_record_without_default_stream_is_expected_discovery(self):
+        from unittest import mock
+        from rescue_sevenzip_members import main
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory);inventory=root/'inventory.jsonl';inventory.write_text('{"record":9}\n');record=mock.Mock();record.header.Flags=1;record.size.side_effect=FileNotFoundError('No default DATA stream');context=mock.Mock();context.fs.mft.get.return_value=record
+            arguments=SimpleNamespace(source=root/'source',baseline=root/'baseline',mft=root/'mft',inventory=inventory,manifest=root/'manifest',evidence=root/'evidence',mapping_directory=root/'mapping',output=root/'output',maximum_total_bytes=1000)
+            with mock.patch('rescue_sevenzip_members.argparse.ArgumentParser.parse_args',return_value=arguments),mock.patch('rescue_sevenzip_members.Context',return_value=context):main()
+            self.assertTrue((arguments.output/'summary.json').is_file());context.close.assert_called_once()
+
     def fixture(self,method=py7zr.FILTER_COPY):
         output=io.BytesIO()
         with py7zr.SevenZipFile(output,'w',filters=[dict(id=method)]) as archive:

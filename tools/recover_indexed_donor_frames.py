@@ -69,23 +69,24 @@ def main():
                 parts=resolver.physical(block*ctx.stride,ctx.stride,0)
                 for base in bases:attempt(base,parts,dict(kind='verified-native-index-hash-reuse',donor_block=block))
             except Exception as error:caught(error,dict(donor_block=block),expected=True,site='indexed-native-donor-probe')
-    owners=collections.defaultdict(list);wanted_records={}
+    owners=collections.defaultdict(list);partial_owners=collections.defaultdict(list);partial_metadata={};wanted_records={}
     with a.inventory.open() as stream:
         for row in map(json.loads,stream):
             number=row['record']
             try:
                 record=ctx.fs.mft.get(number)
-                if record.header.Flags&2 or record.size()<ctx.stride:continue
+                if record.header.Flags&2 or not record.size():continue
                 extents=file_extents(record,record.size());bases={base for lo,hi,base in ctx.holes(record)}&targets.keys()
                 for base in bases:
                     if base in solutions:continue
                     pieces=frame_pieces(extents,base,ctx.stride)
                     if full_frame_covered(pieces,ctx.stride):owners[number].append((base,pieces));wanted_records[number]=record
+                    elif pieces:partial_owners[base].append((number,pieces));partial_metadata[number]=(record.filenames(ignore_dos=True),record.size())
             except Exception as error:caught(error,dict(record=number),expected=True,site='indexed-target-file-probe')
     by_name=collections.defaultdict(set);by_size=collections.defaultdict(set);archive_records=set();metadata={}
     with a.mft.open('rb') as stream,mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ) as raw:
         for number,names,size in candidate_records(raw):
-            if size<ctx.stride:continue
+            if not size:continue
             metadata[number]=(names,size);by_size[size].add(number)
             for name in names:by_name[name.casefold()].add(number)
             if any(pathlib.PureWindowsPath(name).suffix.casefold() in ARCHIVES|{'.exe'} for name in names):archive_records.add(number)
@@ -147,6 +148,9 @@ def main():
                         try_file(number,donor,member['start']-start,'zip-member-metadata-nomination-original-index-md5-required',[(base,pieces)])
             except Exception as error:caught(error,dict(record=donor),expected=True,site='indexed-donor-archive-probe')
             if all(base in solutions for items in owners.values() for base,pieces in items):break
+    metadata.update(partial_metadata)
+    from indexed_boundary_donors import search as boundary_search
+    boundary_search(ctx,index,resolver,db,targets,solutions,partial_owners,metadata,by_name,by_size,a.per_file_budget,attempt,counts)
     requests=list(solutions.values());(a.output/'supplemental-placements.json').write_text(json.dumps(requests,indent=2))
     for name in ('accepted-mappings.json','recovery-plan.json'):(a.output/name).write_bytes((a.mapping_directory/name).read_bytes())
     if counts['per_file_budget_reached']:emit('search-limit','Indexed donor reconstruction per-file budget reached',severity='warning',context=dict(counts))

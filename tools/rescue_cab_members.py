@@ -31,6 +31,21 @@ def extract_batch(seven_zip,cabinet,members,folder):
     return result
 
 
+def batch_status(result,members):
+    """A nonzero global exit never silently becomes member success."""
+    names={m['generated_name'] for m in members};text=result.stdout+'\n'+result.stderr
+    if result.returncode==0:return {name:(0,'') for name in names}
+    errors={};unclassified=[]
+    for line in text.splitlines():
+        if not line.startswith('ERROR:'):continue
+        match=re.fullmatch(r'ERROR: (.+) : (member-\d{5}\.bin)',line)
+        if match and match[2] in names:errors[match[2]]=match[1]
+        else:unclassified.append(line)
+    totals=[int(value) for value in re.findall(r'^Sub items Errors: (\d+)\s*$',text,re.M)]
+    classified=result.returncode==2 and bool(errors) and bool(totals) and all(n==len(errors) for n in totals) and not unclassified
+    return {name:((2,errors[name]) if name in errors else (0,'')) if classified else (result.returncode,'Unclassified batch failure: '+text) for name in names}
+
+
 def export_container(stream,size,holes,owner,folder,seven_zip,counts,audit,maximum_encoded_prefix=1024**3,maximum_decoded_prefix=2*1024**3,maximum_total_bytes=256*1024**3,*,info=None,source_context=None):
     info=metadata(stream,size,holes) if info is None else info;stopped=False
     folder.mkdir(parents=True)
@@ -54,18 +69,21 @@ def export_container(stream,size,holes,owner,folder,seven_zip,counts,audit,maxim
         cabinet=folder/(str(original_folder['index'])+'-decoder-prefix.cab')
         with cabinet.open('xb') as output:write_prefix_cabinet(stream,info['cabinet_bytes'],holes,prefix,members,output)
         batch_folder=folder/(str(original_folder['index'])+'-decoder-batch');batch=extract_batch(seven_zip,cabinet,members,batch_folder)
-        if batch.returncode:emit('cab-batch-decoder-error','CAB batch decoder reported damage; members are individually retried',severity='warning',context=dict(record=owner['record'],folder=original_folder['index'],exit_code=batch.returncode,log=str(batch_folder.with_suffix('.log').resolve())))
+        statuses=batch_status(batch,members)
+        if batch.returncode:emit('cab-batch-decoder-error','CAB batch decoder reported damage; available outputs retain explicit member status without repeated full-prefix decoding',severity='warning',context=dict(record=owner['record'],folder=original_folder['index'],exit_code=batch.returncode,log=str(batch_folder.with_suffix('.log').resolve())))
         for member in members:
             remaining=maximum_total_bytes-counts['exported_bytes']
             if remaining<=0:stopped=True;break
             path=folder/(str(original_folder['index'])+'-'+member['generated_name'])
             extracted=batch_folder/member['generated_name']
-            if batch.returncode==0 and extracted.is_file():
+            if extracted.is_file():
                 if path.exists() or extracted.resolve().parent!=batch_folder.resolve() or path.resolve().parent!=folder.resolve():raise ValueError('CAB generated output path changed')
                 os.replace(extracted,path);digest=hashlib.sha256();count=0
                 with path.open('rb') as data:
                     while chunk:=data.read(65536):digest.update(chunk);count+=len(chunk)
-                result=dict(decoded_bytes=count,sha256=digest.hexdigest(),decoder_exit_code=0,decoder_error=batch.stderr,output_bound_reached=False)
+                code,error=statuses[member['generated_name']];result=dict(decoded_bytes=count,sha256=digest.hexdigest(),decoder_exit_code=code,decoder_error=error,output_bound_reached=False)
+            elif batch.returncode:
+                counts['members_without_decoder_output']+=1;audit.write(json.dumps(dict(record=owner['record'],member=member,kind='cab-member-without-decoder-output',decoder_exit_code=batch.returncode,decoder_log=str(batch_folder.with_suffix('.log').resolve())))+'\n');audit.flush();continue
             else:
                 with path.open('xb') as output:result=extract_member(seven_zip,cabinet,member['generated_name'],output,min(member['available_bytes'],remaining))
             valid=member['complete_original_member'] and member['original_block_checksums_agree'] and result['decoder_exit_code']==0 and result['decoded_bytes']==member['size'] and not result['output_bound_reached']

@@ -9,7 +9,7 @@ native integration tests, with no skips**, on Windows; its
 [Windows CI run](https://github.com/CJInvent/mrimgx_file_layout/actions/runs/40039011818)
 also passed.
 
-The subsequent container/donor iteration passes **127 forensic tests and 10
+The subsequent container/donor iteration passes **130 forensic tests and 10
 native integration tests, with no skips** locally. Its new stored-member donor
 search independently reconstructed three additional complete frames / 430,080
 bytes matching the original source-index MD5 values. Fresh source-piece decoding
@@ -17,8 +17,16 @@ confirmed all three. Latest direct CAB exports independently matched Windows
 expand.exe: 210 complete members and three uncertain prefixes / 644,874,240
 bytes. Compound allocation/stream checks independently verified 23,971 complete
 streams, 16 known parts and 164 additional carved files in the earlier focused
-test. Testing of nested CAB exports and the complete newest rebuild is still
-in progress; these focused results do not assert full-run acceptance.
+test. A damaged nested LZX CAB additionally yielded 238 complete members matching
+the independent Windows decoder, plus 3,908 explicitly uncertain outputs. Original
+compressed source bytes, allocation and metadata were checked independently;
+decoder disagreement for uncertain output remains recorded. Original 7z headers
+and source bytes were independently checked for 86 complete COPY members and
+three separate known fragments. Full-run acceptance of the newest implementation
+is still in progress. An outdated test was deliberately stopped at a read-only
+stage after focused testing exposed inefficient decoder retries and an expected
+NTFS metadata record that lacked a default data stream. Its outputs and failure
+receipt remain intact; those defects are fixed and regression-tested.
 
 Earlier full-image validation independently accepted 6,444 full-frame mappings
 and 31 supplemental destinations. Fresh source decompression and VHDX readback

@@ -21,6 +21,15 @@ def fixture(parts=(b'first contents',b'second contents'),compression=0,reserve=F
 
 
 class CabMemberRescueTests(unittest.TestCase):
+    def test_classified_batch_errors_do_not_retry_or_authorize_failed_members(self):
+        from rescue_cab_members import batch_status
+        from subprocess import CompletedProcess
+        members=[dict(generated_name='member-00000.bin'),dict(generated_name='member-00001.bin')]
+        result=CompletedProcess([],2,'Sub items Errors: 1\n','ERROR: Data Error : member-00001.bin\n')
+        self.assertEqual(batch_status(result,members),{'member-00000.bin':(0,''),'member-00001.bin':(2,'Data Error')})
+        for output in ('','Sub items Errors: 2\n','Sub items Errors: 1\nERROR: Unknown failure\n'):
+            result.stdout=output;self.assertTrue(all(code for code,error in batch_status(result,members).values()))
+
     def test_decoder_names_cannot_be_original_paths(self):
         from rescue_cab_members import extract_batch
         import pathlib

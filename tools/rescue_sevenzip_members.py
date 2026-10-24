@@ -55,6 +55,9 @@ def main():
                     if not holes or not known(holes,0,6) or stream.read(6)!=MAGIC:continue
                     typed=True;counts['damaged_archives_examined']+=1
                     if export_members(stream,record.size(),holes,dict(archive_record=row['record'],archive_sequence=record.header.SequenceNumber,archive_path=row.get('path')),a.output/str(row['record']),counts,a.maximum_total_bytes):break
+                except FileNotFoundError as error:
+                    if typed:raise
+                    caught(error,dict(record=row['record']),expected=True,site='7z-copy-member-discovery')
                 except (OSError,EOFError,MemoryError):raise
                 except Exception as error:
                     caught(error,dict(record=row['record']),expected=not typed,site='7z-copy-member-rescue')

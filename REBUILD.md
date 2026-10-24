@@ -341,9 +341,19 @@ the complete original target frame MD5 and re-decoding every source piece.
 Allocation-proven compound streams are also checked for nested CAB containers.
 The same source-known CAB block decoder and uncertainty rules apply there, with
 compound entry, allocation metadata and physical source ranges retained in JSON.
-Generated flat member names permit one bounded batch decode per CAB prefix;
-decoder failures are logged and retried individually. No decoder receives an
-original archive member path as an output path.
+Generated flat member names permit one bounded batch decode per CAB prefix.
+Member-specific errors and totals must agree before a nonzero batch exit can
+leave another member marked successful. Unclassified failures make every output
+uncertain. Available outputs and missing-member errors are retained without
+repeatedly decoding an already damaged prefix. No decoder receives an original
+archive member path as an output path.
+
+Joint boundary nominations cover frames shared by several small files. Intact
+name/size donors supply file bytes and an independently verified original zero
+frame supplies proposed padding. Overlapping owner proposals are rejected;
+candidate combinations are bounded and audited. Zero padding and filenames
+remain hypotheses until the complete original frame MD5 matches. All accepted
+bytes retain re-decodable original source pieces, including the zero donor.
 
 Inventory refresh reads newly available NTFS attribute lists through the current
 source-backed overlay, while retaining the original corruption ranges for
