@@ -74,6 +74,9 @@ def prefix_members(info,prefix):
     result=[]
     for member in info['members']:
         if member['folder']!=prefix['folder_index']:continue
+        # Empty entries still carry a folder offset. They are representable
+        # only at or before the end of this source-known decoder prefix.
+        if member['folder_offset']>prefix['decoded_prefix_bytes']:continue
         available=max(0,min(member['size'],prefix['decoded_prefix_bytes']-member['folder_offset']))
         if not available and member['size']:continue
         result.append(dict(member,available_bytes=available,complete_original_member=available==member['size'],original_block_checksums_agree=member['folder_offset']+available<=prefix['checksum_trusted_decoded_end'],generated_name=f"member-{member['index']:05d}.bin"))

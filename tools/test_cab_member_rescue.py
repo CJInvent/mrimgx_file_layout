@@ -21,6 +21,19 @@ def fixture(parts=(b'first contents',b'second contents'),compression=0,reserve=F
 
 
 class CabMemberRescueTests(unittest.TestCase):
+    def test_empty_members_beyond_known_prefix_do_not_abort_other_members(self):
+        raw,start,blocks=fixture();info=metadata(io.BytesIO(raw),len(raw))
+        prefix=folder_prefix(io.BytesIO(raw),len(raw),[(start+len(blocks[0]),len(raw),0)],info['folders'][0])
+        end=prefix['decoded_prefix_bytes']
+        for index,offset in enumerate((0,end,end+1),2):
+            info['members'].append(dict(info['members'][0],index=index,size=0,folder_offset=offset))
+        members=prefix_members(info,prefix)
+        self.assertEqual([m['index'] for m in members],[0,2,3])
+        output=io.BytesIO();write_prefix_cabinet(io.BytesIO(raw),len(raw),[],prefix,members,output)
+        generated=output.getvalue();parsed=metadata(io.BytesIO(generated),len(generated))
+        self.assertEqual([m['size'] for m in parsed['members']],[end,0,0])
+        self.assertEqual(generated[parsed['folders'][0]['data_offset']:],blocks[0])
+
     def test_classified_batch_errors_do_not_retry_or_authorize_failed_members(self):
         from rescue_cab_members import batch_status
         from subprocess import CompletedProcess

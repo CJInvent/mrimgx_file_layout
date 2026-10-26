@@ -2,6 +2,24 @@
 
 ## Opt-in forensic rebuild
 
+The latest full container/donor run completed, but its independent acceptance
+failed on nested CAB exports. Two cabinets included zero-length directory
+entries whose folder offsets lay beyond the known decoded prefix. Selection
+incorrectly retained these entries; the writer correctly rejected them, leaving
+empty decoder inputs and preventing export of the other eligible members.
+The selector now excludes out-of-prefix empty entries while retaining empty
+entries at the exact boundary. The regression fails against the frozen old code;
+all **132 forensic tests pass without skips** with the fix.
+
+A fresh read-only replay of both affected source containers exported **351
+complete members and two uncertain prefixes / 142,835,712 bytes**. Independent
+Windows expansion and original source/allocation checks passed for every output.
+Combined validation of all seven nested cabinets, using the two new exports and
+the five retained original exports, passed: 774 complete members and 3,914
+uncertain outputs. Existing decoder disagreements remain explicitly uncertain.
+The original failed full-run receipt is preserved; this is a validated export
+repair, not a claim that a new full rebuild has completed.
+
 The rebuild is tested separately from native conversion. V16 and V17 have both
 completed independent full-image acceptance. The frozen V17 iteration at
 `970615bb598326098e30fce8af78276983718d10` passed **104 forensic tests and 10
@@ -22,8 +40,8 @@ the independent Windows decoder, plus 3,908 explicitly uncertain outputs. Origin
 compressed source bytes, allocation and metadata were checked independently;
 decoder disagreement for uncertain output remains recorded. Original 7z headers
 and source bytes were independently checked for 86 complete COPY members and
-three separate known fragments. Full-run acceptance of the newest implementation
-is still in progress. An outdated test was deliberately stopped at a read-only
+three separate known fragments. The later full-run failure and targeted repair
+are documented above. An outdated test was deliberately stopped at a read-only
 stage after focused testing exposed inefficient decoder retries and an expected
 NTFS metadata record that lacked a default data stream. Its outputs and failure
 receipt remain intact; those defects are fixed and regression-tested.
